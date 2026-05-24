@@ -21,6 +21,7 @@ __pycache__/
 .DS_Store
 .vscode/
 .idea/
+.claude/
 
 # Compressed source archives (originals are deleted after extraction)
 *.rar
