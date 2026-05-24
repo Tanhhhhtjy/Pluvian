@@ -1,0 +1,28 @@
+# Raw observation data — never commit
+radar_nc/
+pwv/
+stations/
+era5/
+2023_05-08_ERA5_PWV.nc
+
+# Derived heavy products — regenerable
+derived/
+
+# Logs / temp
+*.log
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# CDS credentials must never leak
+.cdsapirc
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/
+
+# Compressed source archives (originals are deleted after extraction)
+*.rar
+*.zip
+*.tar.gz
