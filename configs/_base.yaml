@@ -24,7 +24,7 @@ data:
   splits_val: [val]
   window_minutes: 180
   batch_size: 4
-  num_workers: 8
+  num_workers: 2
   drop_pwv_train: false
   drop_pwv_val: false
 
