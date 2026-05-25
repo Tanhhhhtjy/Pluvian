@@ -29,8 +29,7 @@ def main():
     print(f"\n=== Loading sample at {start} ===")
     t0 = time.time()
     ds = NPJDataset(
-        manifest_path="pipeline/manifest.csv",
-        splits=["train"],
+        manifest="pipeline/manifest.csv",
         starts=[start],
         load_mfd=True,
         window_minutes=180,

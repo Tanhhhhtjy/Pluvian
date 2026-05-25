@@ -44,9 +44,16 @@ def _load_monthly(var: str, level: int, year: int, month: int):
     """Return (times_ns int64, src_lat asc, src_lon asc, arr (T, H, W) float32).
 
     Cached so repeated sample loads pay disk + xarray cost once per month.
+    Missing or corrupt files return None (caller fills zeros).
     """
     p = _file(var, level, year, month)
-    ds = xr.open_dataset(p)
+    if not p.exists():
+        return None
+    try:
+        ds = xr.open_dataset(p)
+    except (OSError, IOError, Exception) as e:
+        # Corrupt file (partial download, HDF error, etc.)
+        return None
     lo, hi, la_lo, la_hi = SUBSET_BOX
     sub = ds.sel(longitude=slice(lo, hi), latitude=slice(la_hi, la_lo))
     arr = np.squeeze(sub[var].values).astype(np.float32)
@@ -160,7 +167,10 @@ def _load_era5_impl(start, n_frames, frame_minutes):
             for (y, m) in months:
                 if not _file(var, lvl, y, m).exists():
                     continue
-                src_t, sl, sln, arr = _load_monthly(var, lvl, y, m)
+                _r = _load_monthly(var, lvl, y, m)
+                if _r is None:  # missing/corrupt file
+                    continue
+                src_t, sl, sln, arr = _r
                 src_lat, src_lon = sl, sln
                 sel = (src_t >= hour_lo) & (src_t <= hour_hi)
                 if not sel.any():

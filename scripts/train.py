@@ -106,7 +106,11 @@ def _collate(batch: list[dict]) -> dict:
         elif isinstance(v0, dict):
             sub = {}
             for kk in v0.keys():
-                sub[kk] = torch.stack([b[k][kk] for b in batch], dim=0)
+                vv0 = v0[kk]
+                if isinstance(vv0, torch.Tensor):
+                    sub[kk] = torch.stack([b[k][kk] for b in batch], dim=0)
+                else:
+                    sub[kk] = [b[k][kk] for b in batch]
             out[k] = sub
         else:
             out[k] = [b[k] for b in batch]
@@ -329,6 +333,13 @@ def train_one_epoch(model, loader, opt, losses, cfg, device, dtype, epoch,
             rain_pred = out["rain_pred"]
             pwv_pred = out["pwv_pred"]
 
+            # Model pads HW up to multiple of 8 due to stem 8x downsample.
+            # Crop back to target shape so loss can compare.
+            if rain_pred.shape[-2:] != rain_tgt.shape[-2:]:
+                Ht, Wt = rain_tgt.shape[-2:]
+                rain_pred = rain_pred[..., :Ht, :Wt].contiguous()
+                pwv_pred = pwv_pred[..., :Ht, :Wt].contiguous()
+
             loss_data = losses["data"](rain_pred, rain_tgt) * cfg["loss"]["data"]["weight"]
             loss_total = loss_data
             loss_fss_v = torch.zeros((), device=device)
@@ -428,6 +439,13 @@ def validate(model, loader, losses, cfg, device, dtype, epoch, writer, debug: bo
             out = model(model_in)
         rain_pred = out["rain_pred"].float()
         pwv_pred = out["pwv_pred"].float()
+
+        # Crop model output back to target shape (stem 8x padding)
+        if rain_pred.shape[-2:] != rain_tgt.shape[-2:]:
+            Ht, Wt = rain_tgt.shape[-2:]
+            rain_pred = rain_pred[..., :Ht, :Wt].contiguous()
+            pwv_pred = pwv_pred[..., :Ht, :Wt].contiguous()
+
         rain_tgt_f = rain_tgt.float()
 
         agg["data"].append(losses["data"](rain_pred, rain_tgt_f).item())
