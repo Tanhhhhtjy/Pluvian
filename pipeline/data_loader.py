@@ -35,10 +35,11 @@ class NPJDataset(Dataset):
     """
 
     def __init__(self, manifest=MANIFEST_PATH, window_minutes: int = 180,
-                 starts=None, drop_pwv: bool = False):
+                 starts=None, drop_pwv: bool = False, load_mfd: bool = False):
         self.window_minutes = window_minutes
         self.n_frames = window_minutes // 6
         self.drop_pwv = drop_pwv
+        self.load_mfd = bool(load_mfd)
         if starts is not None:
             self._starts = [pd.Timestamp(s) for s in starts]
             self._meta = [{"date": pd.Timestamp(s).strftime("%Y-%m-%d"),
@@ -92,7 +93,7 @@ class NPJDataset(Dataset):
         era5 = era5_io.load_era5_window(start, self.n_frames)
         era5_t = {k: self._to_tensor(v) for k, v in era5.items()}
 
-        return {
+        sample = {
             "radar": self._to_tensor(radar),
             "radar_mask": self._to_tensor(radar_mask),
             "pwv_grid": self._to_tensor(pwv_vals),
@@ -105,3 +106,7 @@ class NPJDataset(Dataset):
             "time": str(start),
             "meta": meta,
         }
+        if self.load_mfd:
+            mfd = era5_io.load_mfd_window(start, self.n_frames)
+            sample["era5_mfd"] = self._to_tensor(mfd)
+        return sample

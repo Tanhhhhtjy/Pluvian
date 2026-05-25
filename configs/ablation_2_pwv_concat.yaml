@@ -1,0 +1,10 @@
+name: ablation_2_pwv_concat
+inherits: _base.yaml
+model:
+  pwv_enabled: true
+  pwv_concat_only: true
+  era5_enabled: true
+  mfd_channel_enabled: false
+loss:
+  budget:
+    enabled: false

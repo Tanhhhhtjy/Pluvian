@@ -17,8 +17,10 @@ import xarray as xr
 from .utils import RADAR_LAT, RADAR_LON, linear_time_interp
 
 ERA5_ROOT = Path("/Data/tanh/npj/era5")
+MFD_ROOT = Path("/Data/tanh/npj/derived/mfd")
 VARS = ("u", "v", "q", "t")
 LEVELS = (925, 850, 700, 600, 500, 400, 300, 250)
+MFD_LEVELS = (925, 850, 700)
 SUBSET_BOX = (112.5, 120.5, 35.5, 43.1)  # (lon_lo, lon_hi, lat_lo, lat_hi)
 
 
@@ -179,3 +181,81 @@ def _load_era5_impl(start, n_frames, frame_minutes):
                 target_times.values)
         out[var] = cube
     return out
+
+
+# ---------------------------------------------------------------------------
+# MFD (precomputed moisture-flux divergence) loader — same grid/time logic.
+# ---------------------------------------------------------------------------
+
+def _mfd_file(level: int, year: int, month: int) -> Path:
+    return MFD_ROOT / f"era5_mfd_{level}_{year}{month:02d}.nc"
+
+
+@lru_cache(maxsize=64)
+def _load_mfd_monthly(level: int, year: int, month: int):
+    """Return (times_ns, src_lat asc, src_lon asc, arr (T, H, W) float32)."""
+    p = _mfd_file(level, year, month)
+    ds = xr.open_dataset(p)
+    lo, hi, la_lo, la_hi = SUBSET_BOX
+    sub = ds.sel(longitude=slice(lo, hi), latitude=slice(la_hi, la_lo))
+    if sub["latitude"].size == 0:
+        sub = ds.sel(longitude=slice(lo, hi), latitude=slice(la_lo, la_hi))
+    arr = np.squeeze(sub["mfd"].values).astype(np.float32)
+    if arr.ndim == 2:
+        arr = arr[None]
+    src_lat = sub["latitude"].values
+    src_lon = sub["longitude"].values
+    src_t = sub["valid_time"].values.astype("datetime64[ns]").astype("int64")
+    if src_lat[0] > src_lat[-1]:
+        src_lat = src_lat[::-1]
+        arr = np.ascontiguousarray(arr[:, ::-1, :])
+    return src_t, src_lat, src_lon, arr
+
+
+def load_mfd_window(start_time, n_frames: int, frame_minutes: int = 6):
+    """Return (T, L_mfd=3, H, W) float32 interp'd to radar grid.
+
+    Mirrors `load_era5_window` but for the precomputed MFD field at the three
+    pressure levels in ``MFD_LEVELS``. Missing files -> zeros for that level.
+    """
+    return _load_mfd_cached(pd.Timestamp(start_time).value, n_frames, frame_minutes)
+
+
+@lru_cache(maxsize=8)
+def _load_mfd_cached(start_ns: int, n_frames: int, frame_minutes: int):
+    return _load_mfd_impl(pd.Timestamp(start_ns), n_frames, frame_minutes)
+
+
+def _load_mfd_impl(start, n_frames, frame_minutes):
+    target_times = pd.date_range(start, periods=n_frames,
+                                 freq=f"{frame_minutes}min")
+    hour_lo = (start.floor("h") - pd.Timedelta(hours=1)).value
+    hour_hi = (target_times[-1].ceil("h") + pd.Timedelta(hours=1)).value
+    months = sorted({(t.year, t.month) for t in [start - pd.Timedelta(hours=2),
+                                                  target_times[-1] + pd.Timedelta(hours=2)]})
+
+    H = len(RADAR_LAT)
+    W = len(RADAR_LON)
+    cube = np.zeros((n_frames, len(MFD_LEVELS), H, W), dtype=np.float32)
+    for li, lvl in enumerate(MFD_LEVELS):
+        arr_parts = []
+        t_parts = []
+        src_lat = src_lon = None
+        for (y, m) in months:
+            if not _mfd_file(lvl, y, m).exists():
+                continue
+            src_t, sl, sln, arr = _load_mfd_monthly(lvl, y, m)
+            src_lat, src_lon = sl, sln
+            sel = (src_t >= hour_lo) & (src_t <= hour_hi)
+            if not sel.any():
+                continue
+            arr_parts.append(arr[sel])
+            t_parts.append(src_t[sel])
+        if not arr_parts:
+            continue
+        sub_arr = np.concatenate(arr_parts, axis=0) if len(arr_parts) > 1 else arr_parts[0]
+        sub_t = np.concatenate(t_parts) if len(t_parts) > 1 else t_parts[0]
+        interp_sp = _interp_to_radar(sub_arr, src_lat, src_lon)   # (T_src, H, W)
+        cube[:, li] = linear_time_interp(
+            sub_t.astype("datetime64[ns]"), interp_sp, target_times.values)
+    return cube

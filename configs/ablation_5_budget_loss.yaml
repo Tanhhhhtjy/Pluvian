@@ -1,0 +1,11 @@
+name: ablation_5_budget_loss
+inherits: _base.yaml
+model:
+  pwv_enabled: true
+  pwv_concat_only: false
+  era5_enabled: true
+  mfd_channel_enabled: true
+loss:
+  budget:
+    enabled: true
+    weight: 0.1
