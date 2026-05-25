@@ -35,11 +35,13 @@ class NPJDataset(Dataset):
     """
 
     def __init__(self, manifest=MANIFEST_PATH, window_minutes: int = 180,
-                 starts=None, drop_pwv: bool = False, load_mfd: bool = False):
+                 starts=None, drop_pwv: bool = False, load_mfd: bool = False,
+                 load_era5: bool = True):
         self.window_minutes = window_minutes
         self.n_frames = window_minutes // 6
         self.drop_pwv = drop_pwv
         self.load_mfd = bool(load_mfd)
+        self.load_era5 = bool(load_era5)
         if starts is not None:
             self._starts = [pd.Timestamp(s) for s in starts]
             self._meta = [{"date": pd.Timestamp(s).strftime("%Y-%m-%d"),
@@ -89,9 +91,16 @@ class NPJDataset(Dataset):
         n_sta = max(1, self.window_minutes // 60)
         sta_vals, sta_mask, sta_coords = station_io.load_station_window(start, n_sta)
 
-        # ERA5
-        era5 = era5_io.load_era5_window(start, self.n_frames)
-        era5_t = {k: self._to_tensor(v) for k, v in era5.items()}
+        # ERA5 (optional — skip when model doesn't use it to save DataLoader time)
+        if self.load_era5:
+            era5 = era5_io.load_era5_window(start, self.n_frames)
+            era5_t = {k: self._to_tensor(v) for k, v in era5.items()}
+        else:
+            # Provide tiny zero tensors with right keys/shape signature so the
+            # collate/split logic doesn't need to special-case
+            import numpy as np
+            zero = np.zeros((self.n_frames, 8, 4, 4), dtype=np.float32)
+            era5_t = {k: self._to_tensor(zero) for k in ("u", "v", "q", "t")}
 
         sample = {
             "radar": self._to_tensor(radar),

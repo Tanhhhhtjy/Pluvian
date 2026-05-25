@@ -83,15 +83,18 @@ def build_datasets(cfg: dict) -> tuple[NPJDataset, NPJDataset]:
     val_starts = _starts_for_splits(manifest, cfg["data"]["splits_val"])
     win = cfg["data"]["window_minutes"]
     load_mfd = bool(cfg["model"].get("mfd_channel_enabled", False))
+    # Skip ERA5 loading when model doesn't use it (huge DataLoader speedup)
+    load_era5 = bool(cfg["model"].get("era5_enabled", True)) or \
+                bool(cfg["loss"].get("budget", {}).get("enabled", False))
     train_ds = NPJDataset(
         manifest=manifest, window_minutes=win,
         starts=train_starts, drop_pwv=cfg["data"]["drop_pwv_train"],
-        load_mfd=load_mfd,
+        load_mfd=load_mfd, load_era5=load_era5,
     )
     val_ds = NPJDataset(
         manifest=manifest, window_minutes=win,
         starts=val_starts, drop_pwv=cfg["data"]["drop_pwv_val"],
-        load_mfd=load_mfd,
+        load_mfd=load_mfd, load_era5=load_era5,
     )
     return train_ds, val_ds
 

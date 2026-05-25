@@ -22,10 +22,10 @@ import numpy as np
 import xarray as xr
 from scipy.ndimage import gaussian_filter
 
-sys.path.insert(0, "/Data/tanh/npj")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pipeline.era5_io import _load_monthly  # noqa: E402
 
-OUT_DIR = Path("/Data/tanh/npj/derived/mfd")
+OUT_DIR = Path(__file__).resolve().parent.parent / "derived" / "mfd"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 LOG_PATH = OUT_DIR / "compute.log"
 
