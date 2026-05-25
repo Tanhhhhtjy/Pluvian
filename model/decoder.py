@@ -14,7 +14,6 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.utils.checkpoint
 from einops import rearrange
 
 
@@ -84,14 +83,7 @@ class PluvianDecoder(nn.Module):
         x = rearrange(feats, "b t c h w -> b c h w t")
         x = self.time_proj(x)                                     # (B, C, H, W, T_out)
         x = rearrange(x, "b c h w t -> (b t) c h w")
-        # Decoder upsample is the heaviest activation in the model
-        # (going from H/8 W/8 to H W). Checkpoint each stage in training
-        # to trade ~10% compute for ~3x activation-memory savings.
-        if self.training and torch.is_grad_enabled():
-            for stage in self.up:
-                x = torch.utils.checkpoint.checkpoint(stage, x, use_reentrant=False)
-        else:
-            x = self.up(x)                                        # (B*T_out, C', H, W)
+        x = self.up(x)                                            # (B*T_out, C', H, W)
         rain = self.rain_head(x)                                  # (B*T_out, 1, H, W)
         pwv = self.pwv_head(x)
         rain = rearrange(rain, "(b t) () h w -> b t h w",

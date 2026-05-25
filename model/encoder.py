@@ -23,7 +23,6 @@ from typing import Mapping
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.utils.checkpoint
 from einops import rearrange
 
 
@@ -187,28 +186,18 @@ class RadarEncoder(nn.Module):
         x = rearrange(radar, "b t h w -> (b t) () h w")
         x = self.stem(x)                                    # (B*T, C, H/4, W/4)
         x = rearrange(x, "n c h w -> n h w c")
-        use_ckpt = self.training and torch.is_grad_enabled()
         for blk in self.spatial1:
-            if use_ckpt:
-                x = torch.utils.checkpoint.checkpoint(blk, x, use_reentrant=False)
-            else:
-                x = blk(x)
+            x = blk(x)
         x = rearrange(x, "n h w c -> n c h w")
         x = self.down(x)                                    # (B*T, C, H/8, W/8)
         x = rearrange(x, "n c h w -> n h w c")
         for blk in self.spatial2:
-            if use_ckpt:
-                x = torch.utils.checkpoint.checkpoint(blk, x, use_reentrant=False)
-            else:
-                x = blk(x)
+            x = blk(x)
         # temporal mixing across T
         h2, w2 = x.shape[1], x.shape[2]
         x = rearrange(x, "(b t) h w c -> (b h w) t c", b=B, t=T)
         for blk in self.temporal:
-            if use_ckpt:
-                x = torch.utils.checkpoint.checkpoint(blk, x, use_reentrant=False)
-            else:
-                x = blk(x)
+            x = blk(x)
         x = rearrange(x, "(b h w) t c -> b t c h w", b=B, h=h2, w=w2)
         return x
 
