@@ -8,7 +8,14 @@ from functools import lru_cache
 import numpy as np
 import pandas as pd
 
-STATIONS_ROOT = Path("/Data/tanh/npj/stations")
+# === PLUVIAN PATH RESOLVER ===
+import os as _os
+_REPO_ROOT = _os.environ.get("PLUVIAN_REPO_ROOT", _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+def _data_path(*parts):
+    return _os.path.join(_REPO_ROOT, *parts)
+
+
+STATIONS_ROOT = Path(_data_path("stations"))
 
 VAR_COLS = ["PRS", "WIN_D_INST", "WIN_S_INST", "TEM", "RHU", "PRE_1h"]
 LON_LO, LON_HI = 113.0, 120.0

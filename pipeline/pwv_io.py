@@ -10,8 +10,15 @@ from functools import lru_cache
 import numpy as np
 import pandas as pd
 
-PWV_ROOT = Path("/Data/tanh/npj/pwv")
-STATIONS_ROOT = Path("/Data/tanh/npj/stations")
+# === PLUVIAN PATH RESOLVER ===
+import os as _os
+_REPO_ROOT = _os.environ.get("PLUVIAN_REPO_ROOT", _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+def _data_path(*parts):
+    return _os.path.join(_REPO_ROOT, *parts)
+
+
+PWV_ROOT = Path(_data_path("pwv"))
+STATIONS_ROOT = Path(_data_path("stations"))
 
 DROP_STATIONS = {
     # 🔴 <1000 行（DATA_HANDLING.md §3.3）— 必丢

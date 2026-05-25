@@ -16,8 +16,15 @@ import xarray as xr
 
 from .utils import RADAR_LAT, RADAR_LON, linear_time_interp
 
-ERA5_ROOT = Path("/Data/tanh/npj/era5")
-MFD_ROOT = Path("/Data/tanh/npj/derived/mfd")
+# === PLUVIAN PATH RESOLVER ===
+import os as _os
+_REPO_ROOT = _os.environ.get("PLUVIAN_REPO_ROOT", _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+def _data_path(*parts):
+    return _os.path.join(_REPO_ROOT, *parts)
+
+
+ERA5_ROOT = Path(_data_path("era5"))
+MFD_ROOT = Path(_data_path("derived/mfd"))
 VARS = ("u", "v", "q", "t")
 LEVELS = (925, 850, 700, 600, 500, 400, 300, 250)
 MFD_LEVELS = (925, 850, 700)

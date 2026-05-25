@@ -29,12 +29,19 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
+# === PLUVIAN PATH RESOLVER ===
+import os as _os
+_REPO_ROOT = _os.environ.get("PLUVIAN_REPO_ROOT", _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+def _data_path(*parts):
+    return _os.path.join(_REPO_ROOT, *parts)
+
+
 # Silence metpy/pint nan warnings during per-profile loops
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 warnings.filterwarnings("ignore", category=UserWarning, module="metpy")
 
-ERA5_ROOT = Path("/Data/tanh/npj/era5")
-OUT_ROOT = Path("/Data/tanh/npj/derived/instability")
+ERA5_ROOT = Path(_data_path("era5"))
+OUT_ROOT = Path(_data_path("derived/instability"))
 LOG_PATH = OUT_ROOT / "compute.log"
 
 LEVELS = (925, 850, 700, 600, 500, 400, 300, 250)  # high -> low pressure
