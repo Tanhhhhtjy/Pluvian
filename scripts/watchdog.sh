@@ -1,9 +1,9 @@
 #!/bin/bash
-# Pluvian training watchdog
+# Pluvian training watchdog (with auto-shutdown on completion)
 # - Runs on AutoDL remote, independent of any SSH session
 # - Checks every 60s if train.py is alive
 # - On crash, resumes from latest checkpoint
-# - Logs to /root/autodl-tmp/pluvian/logs/watchdog.log
+# - On normal completion: stop AutoDL instance (save $$)
 
 set -u
 
@@ -26,7 +26,6 @@ latest_ckpt() {
     local name=$(basename $cfg .yaml)
     local d=$PLUVIAN/ckpt/$name
     if [ -d "$d" ]; then
-        # Prefer last.pt, fall back to highest-numbered epoch ckpt
         if [ -f "$d/last.pt" ]; then
             echo "$d/last.pt"
             return
@@ -56,28 +55,47 @@ start_train() {
     log "Spawned train PID $!"
 }
 
+# ----------- shutdown helpers -----------
+do_shutdown() {
+    log "==== TRAINING COMPLETE — initiating GPU shutdown to save \$\$ ===="
+    # Method 1: AutoDL native (preferred if available)
+    if command -v shutdown > /dev/null 2>&1; then
+        log "Trying: shutdown -h now"
+        shutdown -h now 2>>$LOG &
+    fi
+    sleep 5
+    # Method 2: kill init (forces container exit)
+    log "Trying: kill -SIGTERM 1"
+    kill -SIGTERM 1 2>>$LOG
+    sleep 10
+    # Method 3: force halt
+    log "Trying: halt -f"
+    halt -f 2>>$LOG
+    # If we're still here after 30s, give up
+    sleep 30
+    log "Shutdown attempts exhausted. User must manually stop instance."
+}
+
 CONFIG_NOW=$PLUVIAN/configs/ablation_1_radar_only.yaml
 CHECK_INTERVAL=60
 
 log "Watchdog start. monitoring: $CONFIG_NOW, interval=${CHECK_INTERVAL}s"
+log "AUTO-SHUTDOWN enabled when [done] appears in training log"
 
 while true; do
     if is_train_alive; then
-        # Healthy. Sleep and continue.
         sleep $CHECK_INTERVAL
         continue
     fi
 
-    # train.py not running. Was it ever started?
     name=$(basename $CONFIG_NOW .yaml)
     cur_log=$PLUVIAN/logs/$name.log
 
     if [ -f "$cur_log" ]; then
-        # Was running before — check if it died with success or crash
         if grep -q "\[done\]" "$cur_log" 2>/dev/null; then
-            log "$name has finished. Watchdog moving to next or stopping."
-            # TODO: schedule next ablation. For now stop here.
-            log "All current ablations done. Watchdog exits."
+            log "$name FINISHED normally."
+            log "All current ablations done. Triggering GPU shutdown."
+            do_shutdown
             exit 0
         fi
         log "$name CRASHED. Will resume in 10s."
@@ -88,5 +106,5 @@ while true; do
     fi
 
     start_train $CONFIG_NOW
-    sleep 30  # give it a moment to allocate GPU before next check
+    sleep 30
 done
