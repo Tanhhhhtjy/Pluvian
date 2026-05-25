@@ -1,0 +1,20 @@
+name: ablation_6_full_pluvian
+inherits: _base.yaml
+# Full proposal model: PWV channel + MFD + budget loss.
+# Diffusion ensemble (Phase 6) hooks into the same checkpoint — see
+# `diffusion:` block reserved below.
+model:
+  pwv_enabled: true
+  pwv_concat_only: false
+  era5_enabled: true
+  mfd_channel_enabled: true
+loss:
+  budget:
+    enabled: true
+    weight: 0.1
+
+# Reserved for Phase 6 — currently inert.
+diffusion:
+  enabled: false
+  n_steps: 50
+  ensemble_members: 16

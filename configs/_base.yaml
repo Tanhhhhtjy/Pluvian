@@ -1,0 +1,72 @@
+# Shared defaults — ablations override only the fields they need to change.
+# (Loaded by scripts/train.py with a shallow-merge: top-level keys are merged,
+# nested dicts deep-merged one level.)
+seed: 42
+
+model:
+  pwv_enabled: true
+  pwv_concat_only: false
+  era5_enabled: true
+  mfd_channel_enabled: false
+  forecast_frames: 18
+  input_frames: 12
+  hidden_dim: 192
+  n_layers: 4
+  n_heads: 8
+  n_era5_vars: 4
+  n_era5_levels: 8
+  mfd_channels: 3
+  radar_channels: 1
+
+data:
+  manifest: pipeline/manifest.csv
+  splits_train: [train]
+  splits_val: [val]
+  window_minutes: 180
+  batch_size: 2
+  num_workers: 4
+  drop_pwv_train: false
+  drop_pwv_val: false
+
+loss:
+  data:
+    type: weighted_mse        # weighted_mse | bmae
+    weight: 1.0
+  fss:
+    enabled: true
+    threshold: 1.0
+    window: 9
+    weight: 0.1
+  budget:
+    enabled: false
+    weight: 0.1
+    delta_p_pa: 30000.0
+    smooth_sigma: 2.0
+    huber_delta: 1.0e-4
+    level_idx: 1              # 850 hPa in LEVELS=(925,850,700,...)
+
+optim:
+  optimizer: adamw
+  lr: 3.0e-4
+  weight_decay: 0.05
+  scheduler: cosine
+  warmup_epochs: 2
+  max_epochs: 60
+  grad_clip: 1.0
+
+hardware:
+  precision: bf16             # bf16 | fp16 | fp32
+  device: cuda
+  grad_accum: 2
+
+ckpt:
+  save_dir: ckpt
+  save_top_k: 3
+  monitor: val/csi_10mm       # higher is better
+  mode: max
+
+log:
+  every_n_steps: 20
+  tensorboard: true
+  wandb: false
+  wandb_project: pluvian
