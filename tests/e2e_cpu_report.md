@@ -11,10 +11,10 @@
 
 ## Model
 - Parameters: **0.469 M**
-- Forward time:  0.11 s
-- Backward time: 0.11 s
+- Forward time:  0.14 s
+- Backward time: 0.17 s
 - Peak host memory (tracemalloc, Python only): 0.1 MB
-- Process RSS peak: 3572.7 MB (Δ during fwd+bwd: +212.4 MB)
+- Process RSS peak: 3009.3 MB (Δ during fwd+bwd: +233.1 MB)
 
 ## Loss
 - Data loss (weighted MSE): 59.646374
@@ -33,10 +33,10 @@
 
 ## GPU estimate (A800 40GB, full resolution H=661, W=701, bs=4, hidden=192, n_layers=4)
 (Very rough — linear extrapolation from this CPU mini-run; expect ±2x error.)
-- Memory: ~140.8 GB
-- Time per step: ~3.03 s
-- Time per epoch (~118 days × 8 starts/day ÷ bs=4): ~0.20 h
-- Time per ablation (60 epochs): ~0.5 days
+- Memory: ~154.5 GB
+- Time per step: ~4.19 s
+- Time per epoch (~118 days × 8 starts/day ÷ bs=4): ~0.27 h
+- Time per ablation (60 epochs): ~0.7 days
 
 ## Assertions
 - All output shapes match declarations
