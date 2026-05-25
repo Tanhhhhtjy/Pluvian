@@ -23,7 +23,7 @@ data:
   splits_train: [train]
   splits_val: [val]
   window_minutes: 180
-  batch_size: 2
+  batch_size: 1
   num_workers: 4
   drop_pwv_train: false
   drop_pwv_val: false
@@ -57,7 +57,7 @@ optim:
 hardware:
   precision: bf16             # bf16 | fp16 | fp32
   device: cuda
-  grad_accum: 2
+  grad_accum: 4
 
 ckpt:
   save_dir: ckpt
