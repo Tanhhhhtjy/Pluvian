@@ -1,0 +1,38 @@
+# Pluvian — base Python deps (CPU 也能装上，GPU 训练再加 requirements-gpu.txt)
+
+# ---- 科学计算 ----
+numpy>=1.26,<2.0
+scipy>=1.11
+pandas>=2.1
+
+# ---- 气象 / 网格数据 ----
+xarray>=2024.1
+netCDF4>=1.6
+cftime>=1.6
+h5py>=3.10
+zarr>=2.16
+metpy>=1.7
+pyproj>=3.6
+
+# ---- 雷达 / 极坐标 ----
+pyart-mch>=1.6 ; python_version < "3.13"
+
+# ---- 配置 / IO ----
+pyyaml>=6.0
+tqdm>=4.66
+click>=8.1
+
+# ---- 绘图 ----
+matplotlib>=3.8
+cartopy>=0.22
+
+# ---- ERA5 下载 ----
+cdsapi>=0.7
+
+# ---- 训练工具（不强制 GPU 也能用）----
+einops>=0.7
+timm>=1.0
+
+# ---- 开发体验 ----
+ipython>=8.18
+jupyterlab>=4.0
