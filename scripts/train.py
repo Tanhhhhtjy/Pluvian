@@ -82,13 +82,16 @@ def build_datasets(cfg: dict) -> tuple[NPJDataset, NPJDataset]:
     train_starts = _starts_for_splits(manifest, cfg["data"]["splits_train"])
     val_starts = _starts_for_splits(manifest, cfg["data"]["splits_val"])
     win = cfg["data"]["window_minutes"]
+    load_mfd = bool(cfg["model"].get("mfd_channel_enabled", False))
     train_ds = NPJDataset(
         manifest=manifest, window_minutes=win,
         starts=train_starts, drop_pwv=cfg["data"]["drop_pwv_train"],
+        load_mfd=load_mfd,
     )
     val_ds = NPJDataset(
         manifest=manifest, window_minutes=win,
         starts=val_starts, drop_pwv=cfg["data"]["drop_pwv_val"],
+        load_mfd=load_mfd,
     )
     return train_ds, val_ds
 
@@ -144,14 +147,29 @@ def split_batch(batch: dict, T_in: int, T_out: int, mfd_channels: int):
         "era5": era5_in,
     }
     if mfd_channels > 0:
-        # MFD is precomputed under /Data/tanh/npj/derived/mfd/ but not yet
-        # piped through NPJDataset. Zero-pad to keep the architecture wired
-        # — values are inert until the dataset starts emitting `era5_mfd`.
-        B = radar.shape[0]
-        H, W = radar.shape[-2:]
-        model_in["era5_mfd"] = torch.zeros(
-            B, T_in, mfd_channels, H, W, dtype=radar.dtype
-        )
+        if "era5_mfd" in batch:
+            mfd = batch["era5_mfd"].float()
+            # NPJDataset emits (B, T, L_mfd, H, W) on the radar grid; slice
+            # the input-time window. If the channel count drifts, pad/trim.
+            mfd_in = mfd[:, :T_in]
+            if mfd_in.shape[2] < mfd_channels:
+                pad = torch.zeros(
+                    mfd_in.shape[0], mfd_in.shape[1],
+                    mfd_channels - mfd_in.shape[2], *mfd_in.shape[-2:],
+                    dtype=mfd_in.dtype, device=mfd_in.device,
+                )
+                mfd_in = torch.cat([mfd_in, pad], dim=2)
+            elif mfd_in.shape[2] > mfd_channels:
+                mfd_in = mfd_in[:, :, :mfd_channels]
+            model_in["era5_mfd"] = mfd_in
+        else:
+            # Fallback only if dataset isn't emitting MFD (e.g. legacy ckpt).
+            B = radar.shape[0]
+            H, W = radar.shape[-2:]
+            model_in["era5_mfd"] = torch.zeros(
+                B, T_in, mfd_channels, H, W,
+                dtype=radar.dtype, device=radar.device,
+            )
     return model_in, rain_tgt, era5_fut
 
 
