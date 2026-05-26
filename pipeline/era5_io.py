@@ -153,11 +153,15 @@ def _load_era5_impl(start, n_frames, frame_minutes):
     _prefetch_monthly([(var, lvl, y, m) for var in VARS for lvl in LEVELS
                        for (y, m) in months])
 
-    H = len(RADAR_LAT)
-    W = len(RADAR_LON)
+    # PERFORMANCE FIX (2026-05-26):
+    # Previously we spatially bilinear-upsampled ERA5 from native 0.25° (~49×49)
+    # to the radar grid 0.01° (661×701) inside the DataLoader. This was wasted
+    # work: Era5Encoder downsamples back to 32×32 immediately, so 49→661→32
+    # was the dominant cost (~6× slower epoch). Now we keep ERA5 at native
+    # resolution and let the encoder consume it directly.
     out = {}
+    src_lat_global = src_lon_global = None
     for var in VARS:
-        cube = np.empty((n_frames, len(LEVELS), H, W), dtype=np.float32)
         stacked = None
         sub_t = None
         src_lat = src_lon = None
@@ -178,7 +182,6 @@ def _load_era5_impl(start, n_frames, frame_minutes):
                 arr_parts.append(arr[sel])
                 t_parts.append(src_t[sel])
             if not arr_parts:
-                cube[:, li] = 0
                 continue
             sub_arr = np.concatenate(arr_parts, axis=0) if len(arr_parts) > 1 else arr_parts[0]
             if stacked is None:
@@ -188,13 +191,22 @@ def _load_era5_impl(start, n_frames, frame_minutes):
                 sub_t = np.concatenate(t_parts) if len(t_parts) > 1 else t_parts[0]
             stacked[li] = sub_arr
         if stacked is None:
-            out[var] = np.zeros_like(cube)
+            # No data for this var — yield zero cube at native resolution
+            # (use last seen src grid if any, else fall back to 49×49 default)
+            srcH = len(src_lat_global) if src_lat_global is not None else 49
+            srcW = len(src_lon_global) if src_lon_global is not None else 49
+            out[var] = np.zeros((n_frames, len(LEVELS), srcH, srcW), dtype=np.float32)
             continue
-        # Batched bilinear across (L, T_src) leading dims.
-        interp_sp = _interp_to_radar(stacked, src_lat, src_lon)  # (L, T_src, H, W)
+        # remember native grid for fallback in subsequent var iters
+        if src_lat is not None:
+            src_lat_global, src_lon_global = src_lat, src_lon
+        # Time interp only — keep native spatial resolution
+        srcH = stacked.shape[2]
+        srcW = stacked.shape[3]
+        cube = np.empty((n_frames, len(LEVELS), srcH, srcW), dtype=np.float32)
         for li in range(len(LEVELS)):
             cube[:, li] = linear_time_interp(
-                sub_t.astype("datetime64[ns]"), interp_sp[li],
+                sub_t.astype("datetime64[ns]"), stacked[li],
                 target_times.values)
         out[var] = cube
     return out
@@ -251,9 +263,10 @@ def _load_mfd_impl(start, n_frames, frame_minutes):
     months = sorted({(t.year, t.month) for t in [start - pd.Timedelta(hours=2),
                                                   target_times[-1] + pd.Timedelta(hours=2)]})
 
-    H = len(RADAR_LAT)
-    W = len(RADAR_LON)
-    cube = np.zeros((n_frames, len(MFD_LEVELS), H, W), dtype=np.float32)
+    # PERFORMANCE FIX (2026-05-26): keep MFD at native 0.25° resolution.
+    # Era5Encoder consumes mfd alongside ERA5 cubes — both at native res.
+    cubes = []
+    srcH = srcW = None
     for li, lvl in enumerate(MFD_LEVELS):
         arr_parts = []
         t_parts = []
@@ -269,10 +282,19 @@ def _load_mfd_impl(start, n_frames, frame_minutes):
             arr_parts.append(arr[sel])
             t_parts.append(src_t[sel])
         if not arr_parts:
+            cubes.append(None)
             continue
         sub_arr = np.concatenate(arr_parts, axis=0) if len(arr_parts) > 1 else arr_parts[0]
         sub_t = np.concatenate(t_parts) if len(t_parts) > 1 else t_parts[0]
-        interp_sp = _interp_to_radar(sub_arr, src_lat, src_lon)   # (T_src, H, W)
-        cube[:, li] = linear_time_interp(
-            sub_t.astype("datetime64[ns]"), interp_sp, target_times.values)
+        srcH, srcW = sub_arr.shape[1], sub_arr.shape[2]
+        # Time interp only — keep native spatial resolution
+        cubes.append(linear_time_interp(
+            sub_t.astype("datetime64[ns]"), sub_arr, target_times.values))
+    # Stack with zeros for missing levels
+    if srcH is None:
+        srcH = srcW = 49
+    cube = np.zeros((n_frames, len(MFD_LEVELS), srcH, srcW), dtype=np.float32)
+    for li, c in enumerate(cubes):
+        if c is not None:
+            cube[:, li] = c
     return cube
