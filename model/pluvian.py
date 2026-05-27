@@ -140,6 +140,20 @@ class Pluvian(nn.Module):
           * ``radar_feat``: (B, T_in, C, H/8, W/8) intermediate dense feature
                             (exposed for future physics-loss hooks)
         """
+        fused = self._encode_and_fuse(batch)
+        rain_pred, pwv_pred = self.decoder(fused)
+        return {
+            "rain_pred": rain_pred,
+            "pwv_pred": pwv_pred,
+            "radar_feat": fused,
+        }
+
+    def _encode_and_fuse(self, batch: Mapping[str, torch.Tensor]) -> torch.Tensor:
+        """Run radar + ERA5 + sparse-token encoders + fusion. Deterministic
+        (no dropout). Returns the fused dense feature tensor that the decoder
+        consumes. Factored out of ``forward`` so MC-dropout sampling can reuse
+        the result across K decoder passes (audit #11: ~4x val speedup).
+        """
         radar = batch["radar"].float()
         if radar.dim() == 4:
             # NPJDataset returns (B, T, H, W); add channel dim
@@ -186,14 +200,7 @@ class Pluvian(nn.Module):
 
         # ---- fusion ----
         fused = self.fusion(radar_feat, sparse_tokens, sparse_kpm)
-
-        # ---- decode ----
-        rain_pred, pwv_pred = self.decoder(fused)
-        return {
-            "rain_pred": rain_pred,
-            "pwv_pred": pwv_pred,
-            "radar_feat": fused,
-        }
+        return fused
 
     # ------------------------------------------------------------------
     # convenience
@@ -212,14 +219,21 @@ class Pluvian(nn.Module):
         kept active. Returns a tensor of shape (K, B, T_out, H, W) of
         ``rain_pred`` samples. The rest of the network is run in eval mode;
         only the decoder Dropout is forced on.
+
+        Audit #11 (2026-05-27): cache the deterministic encoder+fusion output
+        and only re-run the decoder K times. Previously the encoder ran K
+        times despite being deterministic, accounting for ~75% of MC val
+        cost at K=4.
         """
         was_training = self.training
         self.eval()
         self.decoder.enable_mc_dropout(True)
         try:
+            fused = self._encode_and_fuse(batch)
             samples = []
             for _ in range(n_samples):
-                samples.append(self.forward(batch)["rain_pred"])
+                rain_pred, _ = self.decoder(fused)
+                samples.append(rain_pred)
             return torch.stack(samples, dim=0)
         finally:
             self.decoder.enable_mc_dropout(False)

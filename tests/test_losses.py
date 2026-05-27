@@ -174,6 +174,56 @@ def test_mc_dropout_predict_produces_varied_samples():
     dec.enable_mc_dropout(False)
 
 
+def test_mc_dropout_predict_runs_encoder_once():
+    """Audit #11: mc_dropout_predict should cache the deterministic encoder+
+    fusion output and only re-run the decoder K times. We patch
+    Pluvian._encode_and_fuse with a counter and assert it's called once
+    while the decoder runs K times. ~4x val speedup at K=4.
+    """
+    from model.pluvian import Pluvian
+    torch.manual_seed(0)
+    model = Pluvian(
+        radar_channels=1, pwv_enabled=True, era5_enabled=False,
+        forecast_frames=2, input_frames=2, hidden_dim=16,
+        n_layers=2, n_heads=2, decoder_dropout=0.3,
+    )
+    model.eval()
+    B, T, H, W = 1, 2, 16, 16
+    batch = {
+        "radar": torch.rand(B, T, H, W),
+        "pwv_grid": torch.rand(B, 4, 176),
+        "pwv_mask": torch.ones(B, 4, 176),
+        "pwv_coords": torch.rand(B, 176, 2),
+        "station_grid": torch.rand(B, 2, 289, 6),
+        "station_mask": torch.ones(B, 2, 289),
+        "station_coords": torch.rand(B, 289, 3),
+    }
+
+    enc_calls = {"n": 0}
+    dec_calls = {"n": 0}
+    original_encode = model._encode_and_fuse
+    original_decode_forward = model.decoder.forward
+
+    def counted_encode(b):
+        enc_calls["n"] += 1
+        return original_encode(b)
+
+    def counted_decode(feats):
+        dec_calls["n"] += 1
+        return original_decode_forward(feats)
+
+    model._encode_and_fuse = counted_encode
+    model.decoder.forward = counted_decode
+
+    K = 4
+    samples = model.mc_dropout_predict(batch, n_samples=K)
+    assert samples.shape[0] == K
+    assert enc_calls["n"] == 1, f"encoder ran {enc_calls['n']}× (expected 1)"
+    assert dec_calls["n"] == K, f"decoder ran {dec_calls['n']}× (expected {K})"
+    # Samples should differ (dropout active)
+    assert not torch.allclose(samples[0], samples[1])
+
+
 # ---------------------------------------------------------------------------
 # build_losses integration: FocalRainLoss is now wired
 # ---------------------------------------------------------------------------
