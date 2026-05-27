@@ -197,6 +197,20 @@ def split_batch(batch: dict, T_in: int, T_out: int, mfd_channels: int):
 
 def build_losses(cfg: dict) -> dict:
     ltype = cfg["loss"]["data"]["type"]
+    intensity_on = bool(cfg.get("model", {}).get("intensity_stratified", False))
+    # Phase 7b audit M3: when the model emits band logits the configured data
+    # loss is silently overridden by _intensity_loss at train time, but the
+    # *val* loop still evaluates losses["data"]. That made train/val data-loss
+    # plot different quantities. Fail loud: caller must pick exactly one.
+    if intensity_on and ltype != "intensity":
+        raise ValueError(
+            f"intensity_stratified=True conflicts with loss.data.type={ltype!r}; "
+            "set loss.data.type='intensity' to use the band-stratified loss"
+        )
+    if not intensity_on and ltype == "intensity":
+        raise ValueError(
+            "loss.data.type='intensity' requires model.intensity_stratified=True"
+        )
     if ltype == "weighted_mse":
         data_loss = WeightedMSE()
     elif ltype == "bmae":
@@ -214,6 +228,11 @@ def build_losses(cfg: dict) -> dict:
         data_loss = TweedieDevianceLoss(
             p=tw_cfg.get("p", 1.5), eps=tw_cfg.get("eps", 1e-6),
         )
+    elif ltype == "intensity":
+        # Sentinel value: train_one_epoch + validate call _intensity_loss
+        # directly. We still return a callable so val's data-loss accumulator
+        # has something well-defined to log (the same band CE+reg combo).
+        data_loss = None
     else:
         raise ValueError(f"unknown data loss type: {ltype}")
     # FSS: support legacy single ``threshold`` or new list of ``thresholds``.
@@ -587,6 +606,7 @@ def validate(model, loader, losses, cfg, device, dtype, epoch, writer, debug: bo
     agg["spread"] = []
 
     n_crps = int(cfg["loss"].get("crps_samples", 4))
+    intensity_on = bool(cfg["model"].get("intensity_stratified", False))
 
     lat_t = torch.from_numpy(np.asarray(RADAR_LAT, dtype=np.float32)).to(device)
     lon_t = torch.from_numpy(np.asarray(RADAR_LON, dtype=np.float32)).to(device)
@@ -616,7 +636,17 @@ def validate(model, loader, losses, cfg, device, dtype, epoch, writer, debug: bo
 
         rain_tgt_f = rain_tgt.float()
 
-        agg["data"].append(losses["data"](rain_pred, rain_tgt_f).item())
+        # Phase 7b audit M3: when band logits drive training, val must use the
+        # same intensity loss — not the (now-None or mismatched) weighted_mse.
+        if intensity_on and "rain_logits" in out:
+            rain_logits = out["rain_logits"].float()
+            if rain_logits.shape[-2:] != rain_tgt_f.shape[-2:]:
+                Ht, Wt = rain_tgt_f.shape[-2:]
+                rain_logits = rain_logits[..., :Ht, :Wt].contiguous()
+            data_v, _, _ = _intensity_loss(rain_logits, rain_pred, rain_tgt_f, cfg)
+            agg["data"].append(data_v.item())
+        else:
+            agg["data"].append(losses["data"](rain_pred, rain_tgt_f).item())
         for thr in thresholds:
             h, fa, m = _csi_counts(rain_pred, rain_tgt_f, thr)
             ct = csi_totals[int(thr)]

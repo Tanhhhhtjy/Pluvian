@@ -13,6 +13,7 @@ model:
   gated_fusion: true
 loss:
   data:
+    type: intensity        # Phase 7b audit M3: must match intensity_stratified=true
     weight: 1.0
   intensity:
     ce_weight: 1.0
