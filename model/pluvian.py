@@ -27,7 +27,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .encoder import RadarEncoder, Era5Encoder, SparseTokenEncoder
-from .fusion import CrossAttentionFusion
+from .fusion import CrossAttentionFusion, GatedAsymmFusion
 from .decoder import PluvianDecoder
 
 
@@ -62,6 +62,7 @@ class Pluvian(nn.Module):
         n_era5_levels: int = 8,
         mfd_channels: int = 3,
         decoder_dropout: float = 0.1,
+        gated_fusion: bool = True,
         size: str | None = None,
     ):
         super().__init__()
@@ -78,6 +79,9 @@ class Pluvian(nn.Module):
         self.forecast_frames = forecast_frames
         self.input_frames = input_frames
         self.hidden_dim = hidden_dim
+        # ``pwv_concat_only`` forces the legacy combined-bag fusion so the
+        # ab2 ablation reproduces the original architecture exactly.
+        self.gated_fusion = gated_fusion and not pwv_concat_only
 
         # ---- encoders ----
         n_spatial_blocks = max(1, n_layers // 2)
@@ -100,10 +104,16 @@ class Pluvian(nn.Module):
         self.sparse_encoder = SparseTokenEncoder(dim=hidden_dim)
 
         # ---- fusion ----
-        self.fusion = CrossAttentionFusion(
-            dim=hidden_dim, n_heads=n_heads,
-            n_layers=max(1, n_layers // 2),
-        )
+        if self.gated_fusion:
+            self.fusion = GatedAsymmFusion(
+                dim=hidden_dim, n_heads=n_heads,
+                n_cross_layers=max(1, n_layers // 4),
+            )
+        else:
+            self.fusion = CrossAttentionFusion(
+                dim=hidden_dim, n_heads=n_heads,
+                n_layers=max(1, n_layers // 2),
+            )
 
         # ---- decoder ----
         self.decoder = PluvianDecoder(
@@ -199,7 +209,17 @@ class Pluvian(nn.Module):
         )
 
         # ---- fusion ----
-        fused = self.fusion(radar_feat, sparse_tokens, sparse_kpm)
+        if self.gated_fusion:
+            n_pwv = pwv_vals.shape[-1]
+            pwv_tok = sparse_tokens[:, :, :n_pwv]
+            sta_tok = sparse_tokens[:, :, n_pwv:]
+            pwv_kpm_sp = sparse_kpm[:, :, :n_pwv]
+            sta_kpm_sp = sparse_kpm[:, :, n_pwv:]
+            fused = self.fusion(radar_feat,
+                                pwv_tok, pwv_kpm_sp,
+                                sta_tok, sta_kpm_sp)
+        else:
+            fused = self.fusion(radar_feat, sparse_tokens, sparse_kpm)
         return fused
 
     # ------------------------------------------------------------------
