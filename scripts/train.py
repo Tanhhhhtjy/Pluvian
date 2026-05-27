@@ -616,13 +616,26 @@ def validate(model, loader, losses, cfg, device, dtype, epoch, writer, debug: bo
         batch = _to_device(batch, device)
         model_in, rain_tgt, era5_fut = split_batch(batch, T_in, T_out, mfd_ch)
         with torch.autocast(device_type="cuda", dtype=dtype, enabled=device.type == "cuda"):
-            out = model(model_in)
-            # ---- real CRPS via K-member MC-dropout sampling (audit #4: keep
-            # this inside autocast so all forwards use the same bf16/fp16
-            # precision as the deterministic pass; otherwise val time blows up
-            # 5-10x and rain_pred (bf16) disagrees with the MC mean (fp32)).
-            if n_crps > 1 and hasattr(model, "mc_dropout_predict"):
-                mc_samples = model.mc_dropout_predict(model_in, n_samples=n_crps)
+            # Phase 7b audit S1: encoder/fusion is deterministic; run it once
+            # and feed (fused, skips) into both the deterministic decoder and
+            # the K-member MC-dropout sampler. Previously the encoder ran 2x
+            # per val batch (once for `out = model(model_in)`, once inside
+            # mc_dropout_predict), wasting ~30-50% of val time.
+            fused, skips = model._encode_and_fuse(model_in, return_skips=True)
+            decoder_out = model.decoder(fused, encoder_skips=skips)
+            if len(decoder_out) == 3:
+                rain_pred_t, pwv_pred_t, rain_logits_t = decoder_out
+            else:
+                rain_pred_t, pwv_pred_t = decoder_out
+                rain_logits_t = None
+            out = {"rain_pred": rain_pred_t, "pwv_pred": pwv_pred_t,
+                   "radar_feat": fused}
+            if rain_logits_t is not None:
+                out["rain_logits"] = rain_logits_t
+            if n_crps > 1 and hasattr(model, "mc_dropout_predict_from_fused"):
+                mc_samples = model.mc_dropout_predict_from_fused(
+                    fused, skips, n_samples=n_crps,
+                )
             else:
                 mc_samples = None
         rain_pred = out["rain_pred"].float()

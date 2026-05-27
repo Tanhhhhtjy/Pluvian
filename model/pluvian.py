@@ -272,6 +272,26 @@ class Pluvian(nn.Module):
         self.decoder.enable_mc_dropout(True)
         try:
             fused, skips = self._encode_and_fuse(batch, return_skips=True)
+            return self.mc_dropout_predict_from_fused(
+                fused, skips, n_samples=n_samples,
+            )
+        finally:
+            self.decoder.enable_mc_dropout(False)
+            if was_training:
+                self.train()
+
+    def mc_dropout_predict_from_fused(self, fused: torch.Tensor,
+                                      skips: dict | None,
+                                      n_samples: int = 4) -> torch.Tensor:
+        """Phase 7b audit S1: same as ``mc_dropout_predict`` but skips the
+        encoder/fusion pass entirely. The val loop calls this with the
+        already-computed ``(fused, skips)`` from the deterministic forward,
+        cutting val time by another ~30-50% on the heavier 7b architecture.
+        """
+        was_training = self.training
+        self.eval()
+        self.decoder.enable_mc_dropout(True)
+        try:
             samples = []
             for _ in range(n_samples):
                 decoder_out = self.decoder(fused, encoder_skips=skips)
