@@ -92,6 +92,25 @@ def test_fss_fullset_matches_concatenated():
     assert abs(fss_acc - fss_ref) < 1e-5, (fss_acc, fss_ref)
 
 
+def test_fss_multi_threshold_aggregation():
+    """Audit #6: val FSS used to only compute threshold=1mm even though the
+    training-loss FSS spans [1, 10, 30]. Verify each (nbr, thr) accumulator
+    is independent and matches a full-set computation."""
+    batches = _make_batches(seed=2)
+    pred_all = torch.cat([b[0] for b in batches], dim=0)
+    tgt_all = torch.cat([b[1] for b in batches], dim=0)
+    for thr in (1.0, 10.0, 30.0):
+        for nbr in (3, 11):
+            fss_ref = _fss_binary(pred_all, tgt_all, thr, nbr)
+            num = den = 0.0
+            for p, t in batches:
+                n, d = _fss_components(p, t, thr, nbr)
+                num += n; den += d
+            fss_acc = 1.0 - num / den if den > 0 else float("nan")
+            if fss_acc == fss_acc and fss_ref == fss_ref:
+                assert abs(fss_acc - fss_ref) < 1e-5, (thr, nbr, fss_acc, fss_ref)
+
+
 def test_csi_empty_returns_nan():
     pred = torch.zeros(1, 1, 4, 4)
     tgt = torch.zeros(1, 1, 4, 4)

@@ -532,7 +532,9 @@ def validate(model, loader, losses, cfg, device, dtype, epoch, writer, debug: bo
     # rain batches by ~0.02-0.05 — same order as the ab2/ab3 deltas we were
     # trying to compare.
     csi_totals = {int(t): {"hits": 0, "fa": 0, "miss": 0} for t in thresholds}
-    fss_totals = {nbr: {"num": 0.0, "den": 0.0} for nbr in fss_nbrs}
+    fss_thresholds = (1.0, 10.0, 30.0)
+    fss_totals = {(nbr, int(thr)): {"num": 0.0, "den": 0.0}
+                  for nbr in fss_nbrs for thr in fss_thresholds}
     agg = {}
     agg["data"] = []
     agg["budget"] = []
@@ -575,9 +577,11 @@ def validate(model, loader, losses, cfg, device, dtype, epoch, writer, debug: bo
             ct = csi_totals[int(thr)]
             ct["hits"] += h; ct["fa"] += fa; ct["miss"] += m
         for nbr in fss_nbrs:
-            num, den = _fss_components(rain_pred, rain_tgt_f, 1.0, nbr)
-            fss_totals[nbr]["num"] += num
-            fss_totals[nbr]["den"] += den
+            for thr in fss_thresholds:
+                num, den = _fss_components(rain_pred, rain_tgt_f, thr, nbr)
+                key = (nbr, int(thr))
+                fss_totals[key]["num"] += num
+                fss_totals[key]["den"] += den
         # ---- real CRPS via K-member MC-dropout sampling ----
         if mc_samples is not None:
             samples = mc_samples.float()
@@ -613,8 +617,8 @@ def validate(model, loader, losses, cfg, device, dtype, epoch, writer, debug: bo
     for thr_int, ct in csi_totals.items():
         denom = ct["hits"] + ct["fa"] + ct["miss"]
         metrics[f"val/csi_{thr_int}mm"] = ct["hits"] / denom if denom > 0 else float("nan")
-    for nbr, ft in fss_totals.items():
-        metrics[f"val/fss_{nbr}px"] = (
+    for (nbr, thr_int), ft in fss_totals.items():
+        metrics[f"val/fss_{nbr}px_{thr_int}mm"] = (
             1.0 - ft["num"] / ft["den"] if ft["den"] > 0 else float("nan"))
     msg = "[val] " + " ".join(f"{k.split('/')[1]}={v:.4f}" for k, v in metrics.items())
     print(msg)
