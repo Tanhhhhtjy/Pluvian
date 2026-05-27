@@ -255,8 +255,10 @@ def _csi_counts(pred: torch.Tensor, target: torch.Tensor, thr: float) -> tuple[i
 
     Used by the Phase 7a full-set accumulator: callers sum the three integers
     across the whole val epoch and compute CSI once at the end. Batch-averaged
-    CSI (the old behaviour) over-weights small-rain batches and pulled the val
-    estimate around by ~0.02-0.05, which was indistinguishable from the
+    Used by the Phase 7a full-set accumulator: callers sum the three integers
+    across the whole val epoch and compute CSI once at the end. Batch-averaged
+    CSI (the old behaviour) over-weighted small-rain batches and pulled the
+    val estimate around by ~0.02-0.05, which was indistinguishable from the
     ab2-vs-ab3 deltas we were trying to compare.
     """
     p = (pred >= thr)
@@ -287,11 +289,10 @@ def _fss_components(pred: torch.Tensor, target: torch.Tensor, thr: float,
                     window: int) -> tuple[float, float]:
     """Return (sum_sq_diff, sum_ref) summed across pixels for the batch.
 
-    Full-set FSS = 1 - (sum of (fp-ft)^2) / (sum of fp^2 + sum of ft^2). The
-    batch-mean version assumed every batch had the same pixel count; with a
-    drop_last=False loader that's only approximately true and we again drift
-    by ~0.01 per batch. Accumulating the numerator/denominator sums gives the
-    same answer as evaluating on the concatenated tensor.
+    Full-set FSS = 1 - (sum of (fp-ft)^2) / (sum of fp^2 + sum of ft^2).
+    Accumulating numerator/denominator sums gives the same answer as
+    evaluating on the concatenated tensor, unlike the batch-mean form which
+    drifted by ~0.01 per uneven batch (drop_last=False).
     """
     p = (pred >= thr).float()
     t = (target >= thr).float()
@@ -327,6 +328,7 @@ def _crps_ensemble(samples: torch.Tensor, target: torch.Tensor) -> float:
     flat = samples.reshape(K, -1)
     pw = (flat.unsqueeze(0) - flat.unsqueeze(1)).abs().mean()
     return (mae_term - 0.5 * pw).item()
+
 
 
 def _crps_marginal(pred: torch.Tensor, target: torch.Tensor) -> float:
@@ -565,7 +567,6 @@ def validate(model, loader, losses, cfg, device, dtype, epoch, writer, debug: bo
             num, den = _fss_components(rain_pred, rain_tgt_f, 1.0, nbr)
             fss_totals[nbr]["num"] += num
             fss_totals[nbr]["den"] += den
-
         # ---- real CRPS via K-member MC-dropout sampling ----
         if n_crps > 1 and hasattr(model, "mc_dropout_predict"):
             samples = model.mc_dropout_predict(model_in, n_samples=n_crps).float()

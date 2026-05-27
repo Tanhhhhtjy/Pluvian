@@ -53,8 +53,16 @@ class NPJDataset(Dataset):
             self._meta = []
             for _, row in mf.iterrows():
                 day = pd.Timestamp(row["date"])
-                for h in range(0, 24, 3):
-                    self._starts.append(day + pd.Timedelta(hours=h))
+                # Phase 7a: honor per-row `starts_per_day` if present.
+                if "starts_per_day" in row and not pd.isna(row["starts_per_day"]):
+                    spd = int(row["starts_per_day"])
+                else:
+                    spd = 8
+                if spd <= 0:
+                    continue
+                step_hours = 24.0 / spd
+                for k in range(spd):
+                    self._starts.append(day + pd.Timedelta(hours=step_hours * k))
                     self._meta.append({"date": row["date"],
                                        "zero_day": bool(row["zero_day"]),
                                        "split": row["split"]})

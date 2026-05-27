@@ -33,7 +33,7 @@ from pipeline.utils import RADAR_LAT, RADAR_LON
 # Re-use helpers from train.py
 from scripts.train import (  # type: ignore  # noqa: E402
     _starts_for_splits, _collate, split_batch, _to_device,
-    _csi, _fss_binary, _crps_marginal,
+    _csi, _csi_counts, _fss_binary, _fss_components, _crps_marginal,
 )
 
 
@@ -125,9 +125,10 @@ def main():
     mfd_ch = cfg["model"]["mfd_channels"] if cfg["model"]["mfd_channel_enabled"] else 0
     thresholds = (1.0, 5.0, 10.0, 30.0)
     fss_nbrs = (3, 11)
-    agg: dict[str, list[float]] = {f"csi_{int(t)}mm": [] for t in thresholds}
-    for nbr in fss_nbrs:
-        agg[f"fss_{nbr}px"] = []
+    # Phase 7a: full-set CSI/FSS via running totals (mirrors train.validate).
+    csi_totals = {int(t): {"hits": 0, "fa": 0, "miss": 0} for t in thresholds}
+    fss_totals = {nbr: {"num": 0.0, "den": 0.0} for nbr in fss_nbrs}
+    agg: dict[str, list[float]] = {}
     agg["mae"] = []
     agg["crps"] = []
     data_loss = WeightedMSE().to(device)
@@ -139,15 +140,22 @@ def main():
         model_in, rain_tgt, _ = split_batch(batch, T_in, T_out, mfd_ch)
         out = model(model_in)
         rain_pred = out["rain_pred"].float()
+        if rain_pred.shape[-2:] != rain_tgt.shape[-2:]:
+            Ht, Wt = rain_tgt.shape[-2:]
+            rain_pred = rain_pred[..., :Ht, :Wt].contiguous()
         rain_tgt_f = rain_tgt.float()
 
         agg["weighted_mse"].append(data_loss(rain_pred, rain_tgt_f).item())
         agg["mae"].append((rain_pred - rain_tgt_f).abs().mean().item())
         agg["crps"].append(_crps_marginal(rain_pred, rain_tgt_f))
         for thr in thresholds:
-            agg[f"csi_{int(thr)}mm"].append(_csi(rain_pred, rain_tgt_f, thr))
+            h, fa, m = _csi_counts(rain_pred, rain_tgt_f, thr)
+            ct = csi_totals[int(thr)]
+            ct["hits"] += h; ct["fa"] += fa; ct["miss"] += m
         for nbr in fss_nbrs:
-            agg[f"fss_{nbr}px"].append(_fss_binary(rain_pred, rain_tgt_f, 1.0, nbr))
+            num, den = _fss_components(rain_pred, rain_tgt_f, 1.0, nbr)
+            fss_totals[nbr]["num"] += num
+            fss_totals[nbr]["den"] += den
 
         # save up to n_samples sample images
         if sample_count < args.n_samples:
@@ -169,6 +177,13 @@ def main():
     for k, vs in agg.items():
         vs = [v for v in vs if v == v]
         metrics[k] = float(np.mean(vs)) if vs else float("nan")
+    # Phase 7a: full-set CSI/FSS using accumulated counts.
+    for thr_int, ct in csi_totals.items():
+        denom = ct["hits"] + ct["fa"] + ct["miss"]
+        metrics[f"csi_{thr_int}mm"] = ct["hits"] / denom if denom > 0 else float("nan")
+    for nbr, ft in fss_totals.items():
+        metrics[f"fss_{nbr}px"] = (
+            1.0 - ft["num"] / ft["den"] if ft["den"] > 0 else float("nan"))
     metrics["n_windows"] = len(ds)
     metrics["ckpt"] = str(args.ckpt)
     metrics["split"] = splits
