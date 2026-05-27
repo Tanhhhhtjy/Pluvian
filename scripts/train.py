@@ -442,21 +442,6 @@ class CkptManager:
 
 
 # ---------------------------------------------------------------------------
-# OOM-resilient forward
-# ---------------------------------------------------------------------------
-
-def _oom_retry(fn, *args, retries: int = 2, **kw):
-    for attempt in range(retries + 1):
-        try:
-            return fn(*args, **kw)
-        except torch.cuda.OutOfMemoryError:
-            torch.cuda.empty_cache()
-            if attempt == retries:
-                raise
-            print(f"[OOM] retrying ({attempt+1}/{retries}) after cache clear")
-
-
-# ---------------------------------------------------------------------------
 # train + val loops
 # ---------------------------------------------------------------------------
 
