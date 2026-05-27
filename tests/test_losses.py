@@ -204,13 +204,13 @@ def test_mc_dropout_predict_runs_encoder_once():
     original_encode = model._encode_and_fuse
     original_decode_forward = model.decoder.forward
 
-    def counted_encode(b):
+    def counted_encode(b, return_skips=False):
         enc_calls["n"] += 1
-        return original_encode(b)
+        return original_encode(b, return_skips=return_skips)
 
-    def counted_decode(feats):
+    def counted_decode(feats, encoder_skips=None):
         dec_calls["n"] += 1
-        return original_decode_forward(feats)
+        return original_decode_forward(feats, encoder_skips=encoder_skips)
 
     model._encode_and_fuse = counted_encode
     model.decoder.forward = counted_decode

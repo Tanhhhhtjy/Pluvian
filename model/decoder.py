@@ -1,13 +1,19 @@
 """Decoder: fused features → (T_out, H, W) rain & PWV predictions.
 
-We aggregate the input-time axis into a per-frame "forecast bank" with a
-small temporal projection (so the decoder doesn't need to be recurrent),
-then upsample 8x with two PixelShuffle stages and split into two heads.
+Phase 7b T1 refactor (audit Lever #1):
+  * Replace Linear(T_in -> T_out) time projection with per-lead-time
+    learnable queries cross-attending to fused T_in tokens (per spatial
+    location). Each forecast frame attends to its own subset of inputs.
+  * Add U-Net skip connections from the radar encoder at H/8 (stage2)
+    and H/4 (stage1) so high-frequency structure survives the upsample stack.
+
+Backward compatibility: passing ``encoder_skips=None`` runs the cross-attention
+path without skips; old ckpts (with ``time_proj.weight``) will fail to load
+strict, as designed — new training starts from scratch.
 
 Dual heads:
   * ``rain_head``  → predicted dBZ-equivalent (or directly mm/h) future frames
-  * ``pwv_head``   → predicted column water-vapour field (used by the
-                     water-budget physical loss in T4.2)
+  * ``pwv_head``   → predicted column water-vapour field
 """
 from __future__ import annotations
 
@@ -33,6 +39,54 @@ class _UpBlock(nn.Module):
         return self.act(self.norm(self.up(x)))
 
 
+class _SkipFuse(nn.Module):
+    """Fuse a concatenated (main, skip) feature map via 3x3 conv + GN + GELU."""
+
+    def __init__(self, in_ch: int, out_ch: int):
+        super().__init__()
+        self.conv = nn.Conv2d(in_ch, out_ch, 3, padding=1)
+        self.norm = nn.GroupNorm(min(8, out_ch), out_ch)
+        self.act = nn.GELU()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.act(self.norm(self.conv(x)))
+
+
+class _LeadTimeCrossAttn(nn.Module):
+    """Per-spatial-location cross-attention from T_out learnable queries to
+    T_in fused tokens. Output: (B, T_out, C, H, W).
+    """
+
+    def __init__(self, dim: int, forecast_frames: int, n_heads: int = 4):
+        super().__init__()
+        self.dim = dim
+        self.forecast_frames = forecast_frames
+        self.queries = nn.Parameter(torch.randn(forecast_frames, dim) * 0.02)
+        self.q_norm = nn.LayerNorm(dim)
+        self.kv_norm = nn.LayerNorm(dim)
+        self.attn = nn.MultiheadAttention(dim, n_heads, batch_first=True)
+
+    def forward(self, feats: torch.Tensor) -> torch.Tensor:
+        # feats: (B, T_in, C, H, W)
+        B, T_in, C, H, W = feats.shape
+        kv = rearrange(feats, "b t c h w -> (b h w) t c")
+        kv = self.kv_norm(kv)
+        q = self.queries.unsqueeze(0).expand(kv.shape[0], -1, -1)
+        q = self.q_norm(q)
+        out, _ = self.attn(q, kv, kv, need_weights=False)
+        out = rearrange(out, "(b h w) t c -> b t c h w", b=B, h=H, w=W)
+        return out
+
+
+def _temporal_aggregate(skip: torch.Tensor, weights: nn.Linear) -> torch.Tensor:
+    """Project skip (B, T_in, C, H, W) to (B, T_out, C, H, W) by linear mixing
+    over the time axis."""
+    B, T_in, C, H, W = skip.shape
+    x = rearrange(skip, "b t c h w -> b c h w t")
+    x = weights(x)
+    return rearrange(x, "b c h w t -> b t c h w")
+
+
 class PluvianDecoder(nn.Module):
     """Convert fused (B, T_in, C, H/8, W/8) features into two prediction fields.
 
@@ -45,61 +99,94 @@ class PluvianDecoder(nn.Module):
 
     def __init__(self, dim: int = 192, forecast_frames: int = 18,
                  input_frames: int = 30, upsample_factor: int = 8,
-                 dropout: float = 0.1):
+                 dropout: float = 0.1, n_query_heads: int = 4,
+                 skip_channels: int | None = None):
         super().__init__()
         self.forecast_frames = forecast_frames
         self.input_frames = input_frames
         self.dropout_p = float(dropout)
-        # learn a (T_in -> T_out) projection on the time axis. A simple
-        # Linear keeps the parameter count negligible (~30*18 = 540 weights)
-        # while letting the decoder pick which input frames matter for each
-        # forecast horizon.
-        self.time_proj = nn.Linear(input_frames, forecast_frames, bias=True)
+        self.dim = dim
+        self.skip_channels = skip_channels if skip_channels is not None else dim
 
-        ups = []
+        self.lead_attn = _LeadTimeCrossAttn(dim, forecast_frames, n_query_heads)
+
+        self.skip2_time = nn.Linear(input_frames, forecast_frames, bias=False)
+        self.skip1_time = nn.Linear(input_frames, forecast_frames, bias=False)
+
+        self.skip2_proj = nn.Conv2d(self.skip_channels, dim, 1)
+        ch_after_up1 = max(dim // 2, 32)
+        self.skip1_proj = nn.Conv2d(self.skip_channels, ch_after_up1, 1)
+
+        self.fuse_stage2 = _SkipFuse(dim * 2, dim)
+        self.fuse_stage1 = _SkipFuse(ch_after_up1 * 2, ch_after_up1)
+
+        self.up_blocks = nn.ModuleList()
         ch = dim
-        n_ups = 0
         f = upsample_factor
         while f > 1:
             next_ch = max(ch // 2, 32)
-            ups.append(_UpBlock(ch, next_ch))
+            self.up_blocks.append(_UpBlock(ch, next_ch))
             ch = next_ch
             f //= 2
-            n_ups += 1
-        self.up = nn.Sequential(*ups)
         self.last_ch = ch
+
         self.rain_head = nn.Conv2d(ch, 1, 1)
         self.pwv_head = nn.Conv2d(ch, 1, 1)
-        # When True, dropout stays active even when the module is in eval()
-        # mode (used by MC-dropout CRPS).
         self._force_dropout = False
 
     def enable_mc_dropout(self, flag: bool = True) -> None:
         """Toggle MC-dropout sampling. Idempotent."""
         self._force_dropout = bool(flag)
 
-    def forward(self, feats: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        # feats: (B, T_in, C, H/8, W/8)
+    def _maybe_resize_time(self, feats: torch.Tensor) -> torch.Tensor:
         B, T_in, C, h, w = feats.shape
-        if T_in != self.input_frames:
-            # Resample along time to the expected input length so the
-            # Linear projection still applies. Linear interp is fine — it
-            # just keeps the decoder agnostic to mild T_in changes.
-            x = rearrange(feats, "b t c h w -> b (c h w) t")
-            x = F.interpolate(x, size=self.input_frames, mode="linear",
-                              align_corners=False)
-            feats = rearrange(x, "b (c h w) t -> b t c h w", c=C, h=h, w=w)
-        x = rearrange(feats, "b t c h w -> b c h w t")
-        x = self.time_proj(x)                                     # (B, C, H, W, T_out)
-        x = rearrange(x, "b c h w t -> (b t) c h w")
-        # Dropout BEFORE the upsample stack — kept active during MC-dropout
-        # CRPS evaluation by passing ``training=True`` so we get an ensemble
-        # of samples even in eval mode.
+        if T_in == self.input_frames:
+            return feats
+        x = rearrange(feats, "b t c h w -> b (c h w) t")
+        x = F.interpolate(x, size=self.input_frames, mode="linear",
+                          align_corners=False)
+        return rearrange(x, "b (c h w) t -> b t c h w", c=C, h=h, w=w)
+
+    def forward(self, feats: torch.Tensor,
+                encoder_skips: dict | None = None
+                ) -> tuple[torch.Tensor, torch.Tensor]:
+        # feats: (B, T_in, C, H/8, W/8)
+        feats = self._maybe_resize_time(feats)
+        B = feats.shape[0]
+
+        # per-lead-time cross-attention
+        x = self.lead_attn(feats)                          # (B, T_out, C, h, w)
+        x = rearrange(x, "b t c h w -> (b t) c h w")
+
         if self.dropout_p > 0.0:
             x = F.dropout(x, p=self.dropout_p,
                           training=self.training or self._force_dropout)
-        x = self.up(x)                                            # (B*T_out, C', H, W)
-        rain = self.rain_head(x)                                  # (B*T_out, 1, H, W)
+
+        # skip 2 at H/8 before up_blocks[0]
+        if encoder_skips is not None and "stage2" in encoder_skips:
+            s2 = self._maybe_resize_time(encoder_skips["stage2"])
+            s2 = _temporal_aggregate(s2, self.skip2_time)
+            s2 = rearrange(s2, "b t c h w -> (b t) c h w")
+            s2 = self.skip2_proj(s2)
+            x = torch.cat([x, s2], dim=1)
+            x = self.fuse_stage2(x)
+
+        x = self.up_blocks[0](x)
+
+        # skip 1 at H/4 before up_blocks[1]
+        if (len(self.up_blocks) > 1 and encoder_skips is not None
+                and "stage1" in encoder_skips):
+            s1 = self._maybe_resize_time(encoder_skips["stage1"])
+            s1 = _temporal_aggregate(s1, self.skip1_time)
+            s1 = rearrange(s1, "b t c h w -> (b t) c h w")
+            s1 = self.skip1_proj(s1)
+            x = torch.cat([x, s1], dim=1)
+            x = self.fuse_stage1(x)
+
+        for blk in self.up_blocks[1:]:
+            x = blk(x)
+
+        rain = self.rain_head(x)
         pwv = self.pwv_head(x)
         rain = rearrange(rain, "(b t) () h w -> b t h w",
                          b=B, t=self.forecast_frames)
