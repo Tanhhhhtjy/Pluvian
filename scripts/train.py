@@ -550,6 +550,14 @@ def validate(model, loader, losses, cfg, device, dtype, epoch, writer, debug: bo
         model_in, rain_tgt, era5_fut = split_batch(batch, T_in, T_out, mfd_ch)
         with torch.autocast(device_type="cuda", dtype=dtype, enabled=device.type == "cuda"):
             out = model(model_in)
+            # ---- real CRPS via K-member MC-dropout sampling (audit #4: keep
+            # this inside autocast so all forwards use the same bf16/fp16
+            # precision as the deterministic pass; otherwise val time blows up
+            # 5-10x and rain_pred (bf16) disagrees with the MC mean (fp32)).
+            if n_crps > 1 and hasattr(model, "mc_dropout_predict"):
+                mc_samples = model.mc_dropout_predict(model_in, n_samples=n_crps)
+            else:
+                mc_samples = None
         rain_pred = out["rain_pred"].float()
         pwv_pred = out["pwv_pred"].float()
 
@@ -571,8 +579,8 @@ def validate(model, loader, losses, cfg, device, dtype, epoch, writer, debug: bo
             fss_totals[nbr]["num"] += num
             fss_totals[nbr]["den"] += den
         # ---- real CRPS via K-member MC-dropout sampling ----
-        if n_crps > 1 and hasattr(model, "mc_dropout_predict"):
-            samples = model.mc_dropout_predict(model_in, n_samples=n_crps).float()
+        if mc_samples is not None:
+            samples = mc_samples.float()
             if samples.shape[-2:] != rain_tgt_f.shape[-2:]:
                 Ht, Wt = rain_tgt_f.shape[-2:]
                 samples = samples[..., :Ht, :Wt].contiguous()
