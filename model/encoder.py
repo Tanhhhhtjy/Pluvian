@@ -180,7 +180,7 @@ class RadarEncoder(nn.Module):
         )
         self.dim = dim
 
-    def forward(self, radar: torch.Tensor) -> torch.Tensor:
+    def forward(self, radar: torch.Tensor, return_skips: bool = False):
         # radar: (B, T, H, W)
         B, T, H, W = radar.shape
         x = rearrange(radar, "b t h w -> (b t) () h w")
@@ -188,17 +188,23 @@ class RadarEncoder(nn.Module):
         x = rearrange(x, "n c h w -> n h w c")
         for blk in self.spatial1:
             x = blk(x)
+        # stage1 skip: post-spatial1 at H/4
+        skip_stage1 = rearrange(x, "(b t) h w c -> b t c h w", b=B, t=T)
         x = rearrange(x, "n h w c -> n c h w")
         x = self.down(x)                                    # (B*T, C, H/8, W/8)
         x = rearrange(x, "n c h w -> n h w c")
         for blk in self.spatial2:
             x = blk(x)
-        # temporal mixing across T
+        # stage2 skip: post-spatial2 at H/8 (before temporal mixing)
         h2, w2 = x.shape[1], x.shape[2]
+        skip_stage2 = rearrange(x, "(b t) h w c -> b t c h w", b=B, t=T)
+        # temporal mixing across T
         x = rearrange(x, "(b t) h w c -> (b h w) t c", b=B, t=T)
         for blk in self.temporal:
             x = blk(x)
         x = rearrange(x, "(b h w) t c -> b t c h w", b=B, h=h2, w=w2)
+        if return_skips:
+            return x, {"stage1": skip_stage1, "stage2": skip_stage2}
         return x
 
 

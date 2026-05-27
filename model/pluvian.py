@@ -140,19 +140,21 @@ class Pluvian(nn.Module):
           * ``radar_feat``: (B, T_in, C, H/8, W/8) intermediate dense feature
                             (exposed for future physics-loss hooks)
         """
-        fused = self._encode_and_fuse(batch)
-        rain_pred, pwv_pred = self.decoder(fused)
+        fused, skips = self._encode_and_fuse(batch, return_skips=True)
+        rain_pred, pwv_pred = self.decoder(fused, encoder_skips=skips)
         return {
             "rain_pred": rain_pred,
             "pwv_pred": pwv_pred,
             "radar_feat": fused,
         }
 
-    def _encode_and_fuse(self, batch: Mapping[str, torch.Tensor]) -> torch.Tensor:
+    def _encode_and_fuse(self, batch: Mapping[str, torch.Tensor],
+                         return_skips: bool = False):
         """Run radar + ERA5 + sparse-token encoders + fusion. Deterministic
         (no dropout). Returns the fused dense feature tensor that the decoder
-        consumes. Factored out of ``forward`` so MC-dropout sampling can reuse
-        the result across K decoder passes (audit #11: ~4x val speedup).
+        consumes (and optionally a dict of radar-encoder skip features for the
+        U-Net decoder). Factored out of ``forward`` so MC-dropout sampling can
+        reuse the result across K decoder passes (audit #11: ~4x val speedup).
         """
         radar = batch["radar"].float()
         if radar.dim() == 4:
@@ -164,7 +166,11 @@ class Pluvian(nn.Module):
         B, T_in, H, W = radar_in.shape
 
         # ---- radar branch ----
-        radar_feat = self.radar_encoder(radar_in)            # (B, T, C, H/8, W/8)
+        if return_skips:
+            radar_feat, skips = self.radar_encoder(radar_in, return_skips=True)
+        else:
+            radar_feat = self.radar_encoder(radar_in)
+            skips = None
 
         # ---- ERA5 branch ----
         if self.era5_enabled and self.era5_encoder is not None:
@@ -200,6 +206,8 @@ class Pluvian(nn.Module):
 
         # ---- fusion ----
         fused = self.fusion(radar_feat, sparse_tokens, sparse_kpm)
+        if return_skips:
+            return fused, skips
         return fused
 
     # ------------------------------------------------------------------
@@ -229,10 +237,10 @@ class Pluvian(nn.Module):
         self.eval()
         self.decoder.enable_mc_dropout(True)
         try:
-            fused = self._encode_and_fuse(batch)
+            fused, skips = self._encode_and_fuse(batch, return_skips=True)
             samples = []
             for _ in range(n_samples):
-                rain_pred, _ = self.decoder(fused)
+                rain_pred, _ = self.decoder(fused, encoder_skips=skips)
                 samples.append(rain_pred)
             return torch.stack(samples, dim=0)
         finally:
