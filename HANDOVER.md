@@ -222,23 +222,22 @@ nvidia-smi --query-gpu=power.draw --format=csv,noheader
 
 ## 10. 待办（按优先级）
 
-1. **ab3 收尾**（预计当天完成）：
+> **2026-05-27 update**: 跑完代码内审 + 2024-2025 SOTA 扫描，发现现有架构 5 个 bug/缺陷。**ab4/5/6 暂停**，进入 Phase 7（详见第 14 节）。
+
+1. **ab3 收尾**（当天完成）：
    - 拉回 `metric_log.json` + `best.pt` + log
-   - 跑 `scripts/plot_ablation_compare.py`（要支持 3 路曲线，目前只画 ab1 vs ab2，需扩展）
+   - 跑 `scripts/plot_ablation_compare.py`（扩展为 3 路曲线）
    - 跑 `scripts/plot_prediction.py` 生成 23·7 ab3 预测图
    - 推 GitHub
-2. **决策**：ab4 (MFD) vs ab5 (budget loss) 谁先跑？  
-   推荐 **先 ab5**——budget loss 是论文真正 novelty，且 MFD 通道效果可能被 ab5 物理约束覆盖。
-3. **ab4/5/6 启动前都先 speed check**（用户硬规则）。
-4. **Phase 6 评估准备**：
+2. **进入 Phase 7a**（见第 14 节），**不要直接跑 ab4/5/6**
+3. **Phase 6 评估准备**（在 Phase 7a 后做）：
    - CSI/FSS vs lead-time 曲线
    - 23·7 case study 时序栅格图
-   - SOTA 对比表格（vs DGMR/NowcastNet/Pluvian-Earth-2 等公开 baseline）
-5. **论文起草**：
+   - SOTA 对比表格（必须含 FusionCast / CasCast / DiffCast / NowcastNet）
+4. **论文起草**：
    - Figure 1（事件解剖图，参考 `figures/case_23p7/`）
    - Method 章节里 cross-attn + budget loss 的数学公式 + 物理诠释
    - 必须先想图再写文字
-6. **未来可能的真 novelty 点**：**GNSS-MFD 重建** — 目前 MFD 来自 ERA5，真正的创新是用 GNSS 网络反演 PWV 场 → 数值微分得到 MFD，做"observation-driven physics constraint"。
 
 ---
 
@@ -285,3 +284,64 @@ feedback_pretraining_speed_check.md    # 启训前测速规则
 ---
 
 *文档维护：本文件随每个 ablation 完成后更新一次。如果你接管后跑了新实验，更新第 6 节并 commit。*
+
+---
+
+## 14. Phase 7 路线图（2026-05-27 audit 后新增）
+
+跑完 ab1/2/3 后，并行做了内审 + SOTA 扫描，发现现有架构 5 个 bug/缺陷决定先暂停 ab4/5/6 转入 Phase 7。
+
+### 14.1 必修 5 个 bug
+
+| # | 缺陷 | 文件 | 后果 | 修复难度 |
+|---|---|---|---|---|
+| 1 | Val 集只有 32 样本（4 天 × 8 starts），CI ≈ ±0.05 | `pipeline/manifest.csv` | ab2 vs ab3 +0.02 在噪声里，所有排名不可信 | 1 天 |
+| 2 | `_crps_marginal` 实际是 MAE 重命名 | `scripts/train.py:239` | 所有「CRPS」对比都是噪声 | 1 天（4-member MC-dropout） |
+| 3 | PWV+station 同袋（176+289=465 tokens），无 PWV 自注意/时间混合 | `model/fusion.py`, `model/encoder.py:282-291` | cross-attn 退化成 average pooling，**ab3 ≈ ab2 的结构性原因** | 1 周 |
+| 4 | Decoder = Linear(12→18) + 3× PixelShuffle，**无 U-Net skip** | `model/decoder.py:55,67` | 高分辨率结构在 head 前丢光，CSI@30mm plateau 真因 | 1 周 |
+| 5 | Dead code 没接通：`FocalRainLoss`, 多阈值 FSS, `_oom_retry` | `model/losses/data_losses.py:138`, `train.py:189-194` | 已写好的损失项没生效 | 1 天 |
+
+### 14.2 3 阶段路线
+
+**Phase 7a（1 周）— 修 bug + 量化基线**
+- 扩 val 集到 96+ 样本，CSI 改全集累计算（非 batch 平均）
+- 修真 CRPS（4-member MC-dropout）
+- 接通 dead code: `FocalRainLoss` (α=0.75, γ=2.0, thr=10mm) + 多阈值 FSS (10mm/30mm)
+- 加 **Tweedie deviance loss** 替换部分 MSE (arXiv 2509.08369, +16% extreme rain MAE)
+- 用现有 ab1/2/3 best.pt 在新 val 上重 evaluate，得带 CI 的真实排名
+
+**Phase 7b（2-3 周）— 架构升级 v1（论文版本）**
+- **Asymmetric gated radar-PWV fusion** 替换 cross-attn（对标 FusionCast arXiv 2603.13298）
+- **MTLDM 风格 intensity-stratified decoder**（&lt;1, 1-8, 8-30, ≥30 mm/h 多头）
+- **U-Net skip** 到 `radar_encoder.spatial1/spatial2`
+- PWV 加 2 层 self-attn + temporal attention
+- 重新设计 ablation matrix（旧 ab4/5/6 大概要重写）
+
+**Phase 7c（3-4 周）— Diffusion 残差头 v2（reviewer revision 武器）**
+- CasCast / DiffCast 风格 cascaded latent diffusion on residual（保留 7b backbone frozen）
+- **PIANO 风格 ∂q/∂t + ∇·(qv) PDE loss**（arXiv 2512.01062）
+- GenCast 风格 CRPS-direct training（可选）
+
+### 14.3 必须 cite 的同期工作
+
+- **FusionCast** (arXiv 2603.13298) — 最直接竞争对手，必须 head-to-head
+- CasCast (arXiv 2402.04290, ICML'24)
+- DiffCast (arXiv 2312.06734, CVPR'24)
+- NowcastNet (Nature 2023)
+- Aurora (arXiv 2405.13063, Nature 2024)
+- GenCast (arXiv 2312.15796, Nature 2024)
+- PIANO (arXiv 2512.01062)
+- "Stop using RMSE" Hunt 2025 (arXiv 2509.08369)
+
+### 14.4 Pluvian 的 novelty 边界（区别于 FusionCast）
+
+候选差异点（论文要强调的）：
+- Water-vapor budget loss（物理 PDE 约束）
+- GNSS-MFD 重建（observation-driven physics constraint，潜在大 novelty）
+- 多源融合包含 station + ERA5（FusionCast 只有 radar+PWV+future-prior）
+- 不依赖 future-prior radar（FusionCast 关键依赖）
+- npj Climate 期刊定位（vs FusionCast 是 arxiv 预印本）
+
+详见 memory 文件：
+- `~/.claude/projects/-Data-tanh-npj/memory/project_phase7_roadmap.md`
+- `~/.claude/projects/-Data-tanh-npj/memory/reference_fusioncast_competitor.md`
