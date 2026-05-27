@@ -1,0 +1,21 @@
+name: ablation_7b_intensity
+inherits: _base.yaml
+# Phase 7b T3: MTLDM-style 5-band intensity-stratified rain head.
+# Cross-entropy on band assignment + per-band-weighted regression MSE on the
+# continuous expected-value rain map.
+model:
+  pwv_enabled: true
+  pwv_concat_only: false
+  era5_enabled: true
+  mfd_channel_enabled: false
+  intensity_stratified: true
+loss:
+  data:
+    weight: 1.0
+  intensity:
+    ce_weight: 1.0
+    reg_weight: 1.0
+    band_edges: [0.1, 1.0, 8.0, 30.0]
+    band_sample_weights: [0.1, 1.0, 2.0, 4.0, 8.0]
+  budget:
+    enabled: false

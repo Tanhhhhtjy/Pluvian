@@ -17,6 +17,9 @@ model:
   n_era5_levels: 8
   mfd_channels: 3
   radar_channels: 1
+  # Phase 7b T3: MTLDM-style intensity-stratified rain head (off by default).
+  intensity_stratified: false
+  band_centers: [0.0, 0.5, 4.5, 19.0, 50.0]
 
 data:
   manifest: pipeline/manifest.csv
@@ -47,6 +50,11 @@ loss:
     window: 9
     weight: 0.1
   crps_samples: 4             # MC-dropout members for real CRPS at val time
+  intensity:                  # Phase 7b T3 — only used when model.intensity_stratified=true
+    ce_weight: 1.0
+    reg_weight: 1.0
+    band_edges: [0.1, 1.0, 8.0, 30.0]      # K-1 = 4 edges for 5 bands
+    band_sample_weights: [0.1, 1.0, 2.0, 4.0, 8.0]
   budget:
     enabled: false
     weight: 0.1
