@@ -708,11 +708,20 @@ def validate(model, loader, losses, cfg, device, dtype, epoch, writer, debug: bo
     for (nbr, thr_int), ft in fss_totals.items():
         metrics[f"val/fss_{nbr}px_{thr_int}mm"] = (
             1.0 - ft["num"] / ft["den"] if ft["den"] > 0 else float("nan"))
-    msg = "[val] " + " ".join(f"{k.split('/')[1]}={v:.4f}" for k, v in metrics.items())
+    # Phase 7b audit S2: tag the CRPS provenance. In intensity mode, MC-dropout
+    # samples ride on a fixed band lattice and per-pixel std (val/spread) is
+    # structurally smaller than for the continuous head — comparing CRPS across
+    # head topologies without this tag is misleading.
+    metrics["val/crps_method"] = "intensity" if intensity_on else "continuous"
+    msg = "[val] " + " ".join(
+        f"{k.split('/')[1]}={v:.4f}" if isinstance(v, float) else f"{k.split('/')[1]}={v}"
+        for k, v in metrics.items()
+    )
     print(msg)
     if writer is not None:
         for k, v in metrics.items():
-            writer.add_scalar(k, v, epoch)
+            if isinstance(v, (int, float)):
+                writer.add_scalar(k, v, epoch)
     return metrics
 
 
