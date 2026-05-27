@@ -219,8 +219,14 @@ class PluvianDecoder(nn.Module):
         if self.intensity_stratified:
             logits = rearrange(rain_out, "(b t) k h w -> b t k h w",
                                b=B, t=self.forecast_frames)
-            probs = F.softmax(logits, dim=2)
-            centers = self.band_centers.view(1, 1, -1, 1, 1)
+            # Phase 7b audit S3: bf16 softmax + (probs*centers) where the top
+            # band centre is 50 mm/h gives ~0.4 mm quantization noise — that
+            # is the same order as the CSI@30mm decision boundary. Cast to
+            # fp32 for the expectation so the head topology is not what we
+            # are measuring at the high-intensity end. F.cross_entropy already
+            # upcasts internally, so logits stay in their autocast dtype.
+            probs = F.softmax(logits, dim=2).float()
+            centers = self.band_centers.float().view(1, 1, -1, 1, 1)
             rain = (probs * centers).sum(dim=2)
             return rain, pwv, logits
         rain = rearrange(rain_out, "(b t) () h w -> b t h w",
