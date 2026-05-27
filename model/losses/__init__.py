@@ -11,6 +11,7 @@ from .data_losses import (
     FSSProxy,
     FocalRainLoss,
 )
+from .tweedie import TweedieDevianceLoss
 
 __all__ = [
     "SphericalDivergence",
@@ -21,4 +22,5 @@ __all__ = [
     "BMAE",
     "FSSProxy",
     "FocalRainLoss",
+    "TweedieDevianceLoss",
 ]
