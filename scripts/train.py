@@ -31,7 +31,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from model import Pluvian
-from model.losses import WeightedMSE, BMAE, FSSProxy, WaterBudgetLoss
+from model.losses import (
+    WeightedMSE, BMAE, FSSProxy, WaterBudgetLoss,
+    FocalRainLoss, TweedieDevianceLoss,
+)
 from pipeline.data_loader import NPJDataset
 from pipeline.utils import RADAR_LAT, RADAR_LON
 
@@ -72,8 +75,15 @@ def _starts_for_splits(manifest_path: Path, splits: list[str]) -> list[str]:
     starts = []
     for _, row in mf.iterrows():
         day = pd.Timestamp(row["date"])
-        for h in range(0, 24, 3):
-            starts.append((day + pd.Timedelta(hours=h)).isoformat())
+        # Phase 7a: honor per-row `starts_per_day` from the manifest. Legacy
+        # manifests without the column fall back to the historical 8/day spacing.
+        spd = int(row["starts_per_day"]) if "starts_per_day" in row and not pd.isna(row["starts_per_day"]) else 8
+        if spd <= 0:
+            continue
+        step_hours = 24.0 / spd
+        for k in range(spd):
+            offset = pd.Timedelta(hours=step_hours * k)
+            starts.append((day + offset).isoformat())
     return starts
 
 
@@ -190,14 +200,36 @@ def build_losses(cfg: dict) -> dict:
         data_loss = WeightedMSE()
     elif ltype == "bmae":
         data_loss = BMAE()
+    elif ltype == "focal_rain":
+        fr_cfg = cfg["loss"]["data"].get("focal_rain", {})
+        data_loss = FocalRainLoss(
+            rain_threshold=fr_cfg.get("threshold", 10.0),
+            sharpness=fr_cfg.get("sharpness", 5.0),
+            alpha=fr_cfg.get("alpha", 0.75),
+            gamma=fr_cfg.get("gamma", 2.0),
+        )
+    elif ltype == "tweedie":
+        tw_cfg = cfg["loss"]["data"].get("tweedie", {})
+        data_loss = TweedieDevianceLoss(
+            p=tw_cfg.get("p", 1.5), eps=tw_cfg.get("eps", 1e-6),
+        )
     else:
         raise ValueError(f"unknown data loss type: {ltype}")
-    fss = None
+    # FSS: support legacy single ``threshold`` or new list of ``thresholds``.
+    fss_list: list[tuple[FSSProxy, float]] = []
     if cfg["loss"]["fss"]["enabled"]:
-        fss = FSSProxy(
-            threshold=cfg["loss"]["fss"]["threshold"],
-            window=cfg["loss"]["fss"]["window"],
-        )
+        fss_cfg = cfg["loss"]["fss"]
+        thresholds = fss_cfg.get("thresholds")
+        if thresholds is None:
+            thresholds = [fss_cfg.get("threshold", 1.0)]
+        thr_weights = fss_cfg.get("threshold_weights")
+        if thr_weights is None:
+            thr_weights = [1.0 if t < 10.0 else 0.1 for t in thresholds]
+        if len(thr_weights) != len(thresholds):
+            raise ValueError("fss.threshold_weights length mismatch")
+        win = fss_cfg["window"]
+        for thr, w in zip(thresholds, thr_weights):
+            fss_list.append((FSSProxy(threshold=thr, window=win), float(w)))
     budget = None
     if cfg["loss"]["budget"]["enabled"]:
         budget = WaterBudgetLoss(
@@ -205,7 +237,7 @@ def build_losses(cfg: dict) -> dict:
             smooth_sigma=cfg["loss"]["budget"]["smooth_sigma"],
             huber_delta=cfg["loss"]["budget"]["huber_delta"],
         )
-    return {"data": data_loss, "fss": fss, "budget": budget}
+    return {"data": data_loss, "fss": fss_list, "budget": budget}
 
 
 def _csi(pred: torch.Tensor, target: torch.Tensor, thr: float) -> float:
@@ -216,6 +248,23 @@ def _csi(pred: torch.Tensor, target: torch.Tensor, thr: float) -> float:
     miss = (~p & t).sum().item()
     denom = hits + fa + miss
     return hits / denom if denom > 0 else float("nan")
+
+
+def _csi_counts(pred: torch.Tensor, target: torch.Tensor, thr: float) -> tuple[int, int, int]:
+    """Return (hits, false_alarms, misses) for one batch at threshold `thr`.
+
+    Used by the Phase 7a full-set accumulator: callers sum the three integers
+    across the whole val epoch and compute CSI once at the end. Batch-averaged
+    CSI (the old behaviour) over-weights small-rain batches and pulled the val
+    estimate around by ~0.02-0.05, which was indistinguishable from the
+    ab2-vs-ab3 deltas we were trying to compare.
+    """
+    p = (pred >= thr)
+    t = (target >= thr)
+    hits = int((p & t).sum().item())
+    fa = int((p & ~t).sum().item())
+    miss = int((~p & t).sum().item())
+    return hits, fa, miss
 
 
 def _fss_binary(pred: torch.Tensor, target: torch.Tensor, thr: float,
@@ -234,9 +283,55 @@ def _fss_binary(pred: torch.Tensor, target: torch.Tensor, thr: float,
     return 1.0 - num / den
 
 
+def _fss_components(pred: torch.Tensor, target: torch.Tensor, thr: float,
+                    window: int) -> tuple[float, float]:
+    """Return (sum_sq_diff, sum_ref) summed across pixels for the batch.
+
+    Full-set FSS = 1 - (sum of (fp-ft)^2) / (sum of fp^2 + sum of ft^2). The
+    batch-mean version assumed every batch had the same pixel count; with a
+    drop_last=False loader that's only approximately true and we again drift
+    by ~0.01 per batch. Accumulating the numerator/denominator sums gives the
+    same answer as evaluating on the concatenated tensor.
+    """
+    p = (pred >= thr).float()
+    t = (target >= thr).float()
+    B, T, H, W = p.shape
+    p = p.reshape(B * T, 1, H, W)
+    t = t.reshape(B * T, 1, H, W)
+    pad = window // 2
+    fp = F.avg_pool2d(p, window, stride=1, padding=pad, count_include_pad=False)
+    ft = F.avg_pool2d(t, window, stride=1, padding=pad, count_include_pad=False)
+    num = float(((fp - ft) ** 2).sum().item())
+    den = float((fp ** 2).sum().item() + (ft ** 2).sum().item())
+    return num, den
+
+
+def _crps_ensemble(samples: torch.Tensor, target: torch.Tensor) -> float:
+    """Proper CRPS for a K-member ensemble via the empirical formula::
+
+        CRPS = mean_i |x_i - y| - 1/(2 K^2) sum_{i,j} |x_i - x_j|
+
+    Parameters
+    ----------
+    samples : (K, ...) tensor of forecast members.
+    target  : (...) tensor — broadcast over members.
+    """
+    if samples.dim() == target.dim():
+        # Treat single-member as a (1, ...) ensemble — degenerates to MAE.
+        samples = samples.unsqueeze(0)
+    K = samples.shape[0]
+    y = target.unsqueeze(0)
+    mae_term = (samples - y).abs().mean()
+    # Pairwise |x_i - x_j| averaged over K^2 (including i=j -> 0).
+    # Reshape so we can broadcast: (K, 1, N) - (1, K, N) -> (K, K, N)
+    flat = samples.reshape(K, -1)
+    pw = (flat.unsqueeze(0) - flat.unsqueeze(1)).abs().mean()
+    return (mae_term - 0.5 * pw).item()
+
+
 def _crps_marginal(pred: torch.Tensor, target: torch.Tensor) -> float:
-    # Deterministic surrogate: CRPS reduces to MAE for a single-member forecast.
-    return (pred - target).abs().mean().item()
+    """Backwards-compatible alias — degenerate single-member CRPS == MAE."""
+    return _crps_ensemble(pred.unsqueeze(0), target)
 
 
 # ---------------------------------------------------------------------------
@@ -346,8 +441,11 @@ def train_one_epoch(model, loader, opt, losses, cfg, device, dtype, epoch,
             loss_data = losses["data"](rain_pred, rain_tgt) * cfg["loss"]["data"]["weight"]
             loss_total = loss_data
             loss_fss_v = torch.zeros((), device=device)
-            if losses["fss"] is not None:
-                loss_fss_v = losses["fss"](rain_pred, rain_tgt) * cfg["loss"]["fss"]["weight"]
+            if losses["fss"]:
+                fss_w = cfg["loss"]["fss"]["weight"]
+                for fss_mod, thr_w in losses["fss"]:
+                    loss_fss_v = loss_fss_v + fss_mod(rain_pred, rain_tgt) * thr_w
+                loss_fss_v = loss_fss_v * fss_w
                 loss_total = loss_total + loss_fss_v
             loss_budget_v = torch.zeros((), device=device)
             if losses["budget"] is not None:
@@ -424,12 +522,19 @@ def validate(model, loader, losses, cfg, device, dtype, epoch, writer, debug: bo
     mfd_ch = cfg["model"]["mfd_channels"] if cfg["model"]["mfd_channel_enabled"] else 0
     thresholds = (1.0, 5.0, 10.0, 30.0)
     fss_nbrs = (3, 11)
-    agg = {f"csi_{int(t)}mm": [] for t in thresholds}
-    for nbr in fss_nbrs:
-        agg[f"fss_{nbr}px"] = []
+    # Phase 7a: accumulate raw counts across the whole val epoch and compute
+    # one CSI/FSS at the end. The old per-batch average over-weighted small-
+    # rain batches by ~0.02-0.05 — same order as the ab2/ab3 deltas we were
+    # trying to compare.
+    csi_totals = {int(t): {"hits": 0, "fa": 0, "miss": 0} for t in thresholds}
+    fss_totals = {nbr: {"num": 0.0, "den": 0.0} for nbr in fss_nbrs}
+    agg = {}
     agg["data"] = []
     agg["budget"] = []
     agg["crps"] = []
+    agg["spread"] = []
+
+    n_crps = int(cfg["loss"].get("crps_samples", 4))
 
     lat_t = torch.from_numpy(np.asarray(RADAR_LAT, dtype=np.float32)).to(device)
     lon_t = torch.from_numpy(np.asarray(RADAR_LON, dtype=np.float32)).to(device)
@@ -453,10 +558,26 @@ def validate(model, loader, losses, cfg, device, dtype, epoch, writer, debug: bo
 
         agg["data"].append(losses["data"](rain_pred, rain_tgt_f).item())
         for thr in thresholds:
-            agg[f"csi_{int(thr)}mm"].append(_csi(rain_pred, rain_tgt_f, thr))
+            h, fa, m = _csi_counts(rain_pred, rain_tgt_f, thr)
+            ct = csi_totals[int(thr)]
+            ct["hits"] += h; ct["fa"] += fa; ct["miss"] += m
         for nbr in fss_nbrs:
-            agg[f"fss_{nbr}px"].append(_fss_binary(rain_pred, rain_tgt_f, 1.0, nbr))
-        agg["crps"].append(_crps_marginal(rain_pred, rain_tgt_f))
+            num, den = _fss_components(rain_pred, rain_tgt_f, 1.0, nbr)
+            fss_totals[nbr]["num"] += num
+            fss_totals[nbr]["den"] += den
+
+        # ---- real CRPS via K-member MC-dropout sampling ----
+        if n_crps > 1 and hasattr(model, "mc_dropout_predict"):
+            samples = model.mc_dropout_predict(model_in, n_samples=n_crps).float()
+            if samples.shape[-2:] != rain_tgt_f.shape[-2:]:
+                Ht, Wt = rain_tgt_f.shape[-2:]
+                samples = samples[..., :Ht, :Wt].contiguous()
+            agg["crps"].append(_crps_ensemble(samples, rain_tgt_f))
+            agg["spread"].append(samples.std(dim=0).mean().item())
+        else:
+            # Fallback: degenerate single-member CRPS == MAE.
+            agg["crps"].append(_crps_marginal(rain_pred, rain_tgt_f))
+            agg["spread"].append(0.0)
 
         if losses["budget"] is not None:
             lvl = budget_cfg["level_idx"]
@@ -476,6 +597,13 @@ def validate(model, loader, losses, cfg, device, dtype, epoch, writer, debug: bo
     for k, vs in agg.items():
         vs = [v for v in vs if v == v]  # drop NaN
         metrics[f"val/{k}"] = float(np.mean(vs)) if vs else float("nan")
+    # Phase 7a: full-set CSI/FSS using accumulated counts.
+    for thr_int, ct in csi_totals.items():
+        denom = ct["hits"] + ct["fa"] + ct["miss"]
+        metrics[f"val/csi_{thr_int}mm"] = ct["hits"] / denom if denom > 0 else float("nan")
+    for nbr, ft in fss_totals.items():
+        metrics[f"val/fss_{nbr}px"] = (
+            1.0 - ft["num"] / ft["den"] if ft["den"] > 0 else float("nan"))
     msg = "[val] " + " ".join(f"{k.split('/')[1]}={v:.4f}" for k, v in metrics.items())
     print(msg)
     if writer is not None:
@@ -559,7 +687,12 @@ def main():
     )
     losses = build_losses(cfg)
     for k, v in losses.items():
-        if v is not None:
+        if v is None:
+            continue
+        if k == "fss":
+            for fss_mod, _w in v:
+                fss_mod.to(device)
+        else:
             v.to(device)
 
     # ---- resume ----

@@ -30,13 +30,23 @@ data:
 
 loss:
   data:
-    type: weighted_mse        # weighted_mse | bmae
+    type: weighted_mse        # weighted_mse | bmae | focal_rain | tweedie
     weight: 1.0
+    focal_rain:
+      threshold: 10.0
+      sharpness: 5.0
+      alpha: 0.75
+      gamma: 2.0
+    tweedie:
+      p: 1.5
+      eps: 1.0e-6
   fss:
     enabled: true
-    threshold: 1.0
+    thresholds: [1.0, 10.0, 30.0]
+    threshold_weights: [1.0, 0.1, 0.1]
     window: 9
     weight: 0.1
+  crps_samples: 4             # MC-dropout members for real CRPS at val time
   budget:
     enabled: false
     weight: 0.1

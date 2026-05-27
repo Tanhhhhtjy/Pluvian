@@ -61,6 +61,7 @@ class Pluvian(nn.Module):
         n_era5_vars: int = 4,
         n_era5_levels: int = 8,
         mfd_channels: int = 3,
+        decoder_dropout: float = 0.1,
         size: str | None = None,
     ):
         super().__init__()
@@ -108,6 +109,7 @@ class Pluvian(nn.Module):
         self.decoder = PluvianDecoder(
             dim=hidden_dim, forecast_frames=forecast_frames,
             input_frames=input_frames, upsample_factor=8,
+            dropout=decoder_dropout,
         )
 
     # ------------------------------------------------------------------
@@ -199,3 +201,27 @@ class Pluvian(nn.Module):
 
     def num_parameters(self) -> int:
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+    # ------------------------------------------------------------------
+    # MC-dropout ensemble for real CRPS
+    # ------------------------------------------------------------------
+
+    def mc_dropout_predict(self, batch: Mapping[str, torch.Tensor],
+                           n_samples: int = 4) -> torch.Tensor:
+        """Run ``n_samples`` stochastic forward passes with decoder dropout
+        kept active. Returns a tensor of shape (K, B, T_out, H, W) of
+        ``rain_pred`` samples. The rest of the network is run in eval mode;
+        only the decoder Dropout is forced on.
+        """
+        was_training = self.training
+        self.eval()
+        self.decoder.enable_mc_dropout(True)
+        try:
+            samples = []
+            for _ in range(n_samples):
+                samples.append(self.forward(batch)["rain_pred"])
+            return torch.stack(samples, dim=0)
+        finally:
+            self.decoder.enable_mc_dropout(False)
+            if was_training:
+                self.train()

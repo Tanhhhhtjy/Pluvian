@@ -44,10 +44,12 @@ class PluvianDecoder(nn.Module):
     """
 
     def __init__(self, dim: int = 192, forecast_frames: int = 18,
-                 input_frames: int = 30, upsample_factor: int = 8):
+                 input_frames: int = 30, upsample_factor: int = 8,
+                 dropout: float = 0.1):
         super().__init__()
         self.forecast_frames = forecast_frames
         self.input_frames = input_frames
+        self.dropout_p = float(dropout)
         # learn a (T_in -> T_out) projection on the time axis. A simple
         # Linear keeps the parameter count negligible (~30*18 = 540 weights)
         # while letting the decoder pick which input frames matter for each
@@ -68,6 +70,13 @@ class PluvianDecoder(nn.Module):
         self.last_ch = ch
         self.rain_head = nn.Conv2d(ch, 1, 1)
         self.pwv_head = nn.Conv2d(ch, 1, 1)
+        # When True, dropout stays active even when the module is in eval()
+        # mode (used by MC-dropout CRPS).
+        self._force_dropout = False
+
+    def enable_mc_dropout(self, flag: bool = True) -> None:
+        """Toggle MC-dropout sampling. Idempotent."""
+        self._force_dropout = bool(flag)
 
     def forward(self, feats: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         # feats: (B, T_in, C, H/8, W/8)
@@ -83,6 +92,12 @@ class PluvianDecoder(nn.Module):
         x = rearrange(feats, "b t c h w -> b c h w t")
         x = self.time_proj(x)                                     # (B, C, H, W, T_out)
         x = rearrange(x, "b c h w t -> (b t) c h w")
+        # Dropout BEFORE the upsample stack — kept active during MC-dropout
+        # CRPS evaluation by passing ``training=True`` so we get an ensemble
+        # of samples even in eval mode.
+        if self.dropout_p > 0.0:
+            x = F.dropout(x, p=self.dropout_p,
+                          training=self.training or self._force_dropout)
         x = self.up(x)                                            # (B*T_out, C', H, W)
         rain = self.rain_head(x)                                  # (B*T_out, 1, H, W)
         pwv = self.pwv_head(x)
