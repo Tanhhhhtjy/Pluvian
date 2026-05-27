@@ -15,6 +15,7 @@ import copy
 import json
 import math
 import os
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -372,10 +373,12 @@ class CkptManager:
         self.records.append((score, path))
         # sort best first
         self.records.sort(key=lambda r: -r[0] if self.mode == "max" else r[0])
-        # link best
+        # Copy the historically-best epoch file into best.pt. Audit item #1
+        # (2026-05-27): previous version dumped the CURRENT epoch state into
+        # best.pt regardless of score, silently invalidating every "best" eval.
         best = self.records[0][1]
         best_link = self.save_dir / "best.pt"
-        torch.save(state, best_link)
+        shutil.copyfile(best, best_link)
         # prune
         keep = self.records[: self.top_k]
         drop = self.records[self.top_k:]
