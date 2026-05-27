@@ -48,7 +48,8 @@ class NPJDataset(Dataset):
                            "zero_day": False} for s in starts]
         else:
             mf = pd.read_csv(manifest)
-            mf = mf[mf["split"].isin(("train", "test_robust"))]
+            mf = mf[mf["split"].isin(("train", "val", "test_robust",
+                                      "event_test"))]
             self._starts = []
             self._meta = []
             for _, row in mf.iterrows():
