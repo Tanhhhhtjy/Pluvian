@@ -241,6 +241,40 @@ def build_losses(cfg: dict) -> dict:
     return {"data": data_loss, "fss": fss_list, "budget": budget}
 
 
+def _intensity_loss(rain_logits: torch.Tensor, rain_pred: torch.Tensor,
+                    rain_tgt: torch.Tensor, cfg: dict
+                    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """MTLDM-style stratified loss.
+
+    Returns ``(total, ce, weighted_reg)`` where each is a scalar tensor.
+    ``rain_logits``: (B, T, K, H, W); ``rain_pred``/``rain_tgt``: (B, T, H, W).
+    """
+    icfg = cfg["loss"].get("intensity", {})
+    edges = icfg.get("band_edges", [0.1, 1.0, 8.0, 30.0])
+    sample_w = icfg.get("band_sample_weights", [0.1, 1.0, 2.0, 4.0, 8.0])
+    ce_w = float(icfg.get("ce_weight", 1.0))
+    reg_w = float(icfg.get("reg_weight", 1.0))
+
+    K = rain_logits.shape[2]
+    if len(sample_w) != K:
+        raise ValueError(f"band_sample_weights length {len(sample_w)} != K={K}")
+
+    edges_t = torch.tensor(edges, dtype=rain_tgt.dtype, device=rain_tgt.device)
+    band_idx = torch.bucketize(rain_tgt.clamp(min=0.0), edges_t).long()
+
+    logits_flat = rain_logits.permute(0, 1, 3, 4, 2).reshape(-1, K)
+    target_flat = band_idx.reshape(-1)
+    ce = F.cross_entropy(logits_flat, target_flat)
+
+    w_t = torch.tensor(sample_w, dtype=rain_pred.dtype, device=rain_pred.device)
+    per_pix_w = w_t[band_idx]
+    sq = (rain_pred - rain_tgt) ** 2
+    reg = (sq * per_pix_w).mean()
+
+    total = ce_w * ce + reg_w * reg
+    return total, ce.detach(), reg.detach()
+
+
 def _csi(pred: torch.Tensor, target: torch.Tensor, thr: float) -> float:
     p = (pred >= thr)
     t = (target >= thr)
@@ -419,6 +453,7 @@ def train_one_epoch(model, loader, opt, losses, cfg, device, dtype, epoch,
     mfd_ch = cfg["model"]["mfd_channels"] if cfg["model"]["mfd_channel_enabled"] else 0
     log_every = cfg["log"]["every_n_steps"]
     budget_cfg = cfg["loss"]["budget"]
+    intensity_on = bool(cfg["model"].get("intensity_stratified", False))
 
     lat_t = torch.from_numpy(np.asarray(RADAR_LAT, dtype=np.float32)).to(device)
     lon_t = torch.from_numpy(np.asarray(RADAR_LON, dtype=np.float32)).to(device)
@@ -443,7 +478,17 @@ def train_one_epoch(model, loader, opt, losses, cfg, device, dtype, epoch,
                 rain_pred = rain_pred[..., :Ht, :Wt].contiguous()
                 pwv_pred = pwv_pred[..., :Ht, :Wt].contiguous()
 
-            loss_data = losses["data"](rain_pred, rain_tgt) * cfg["loss"]["data"]["weight"]
+            if intensity_on and "rain_logits" in out:
+                rain_logits = out["rain_logits"]
+                if rain_logits.shape[-2:] != rain_tgt.shape[-2:]:
+                    Ht, Wt = rain_tgt.shape[-2:]
+                    rain_logits = rain_logits[..., :Ht, :Wt].contiguous()
+                loss_data, _ce_v, _reg_v = _intensity_loss(
+                    rain_logits, rain_pred, rain_tgt, cfg
+                )
+                loss_data = loss_data * cfg["loss"]["data"]["weight"]
+            else:
+                loss_data = losses["data"](rain_pred, rain_tgt) * cfg["loss"]["data"]["weight"]
             loss_total = loss_data
             loss_fss_v = torch.zeros((), device=device)
             if losses["fss"]:
@@ -693,6 +738,8 @@ def main():
         n_era5_vars=m["n_era5_vars"],
         n_era5_levels=m["n_era5_levels"],
         mfd_channels=m["mfd_channels"],
+        intensity_stratified=bool(m.get("intensity_stratified", False)),
+        band_centers=tuple(m.get("band_centers", (0.0, 0.5, 4.5, 19.0, 50.0))),
     ).to(device)
     print(f"[model] params: {model.num_parameters()/1e6:.2f}M")
 

@@ -63,6 +63,8 @@ class Pluvian(nn.Module):
         mfd_channels: int = 3,
         decoder_dropout: float = 0.1,
         size: str | None = None,
+        intensity_stratified: bool = False,
+        band_centers: tuple = (0.0, 0.5, 4.5, 19.0, 50.0),
     ):
         super().__init__()
         if size is not None:
@@ -110,7 +112,10 @@ class Pluvian(nn.Module):
             dim=hidden_dim, forecast_frames=forecast_frames,
             input_frames=input_frames, upsample_factor=8,
             dropout=decoder_dropout,
+            intensity_stratified=intensity_stratified,
+            band_centers=band_centers,
         )
+        self.intensity_stratified = bool(intensity_stratified)
 
     # ------------------------------------------------------------------
     # helpers
@@ -141,12 +146,20 @@ class Pluvian(nn.Module):
                             (exposed for future physics-loss hooks)
         """
         fused, skips = self._encode_and_fuse(batch, return_skips=True)
-        rain_pred, pwv_pred = self.decoder(fused, encoder_skips=skips)
-        return {
+        decoder_out = self.decoder(fused, encoder_skips=skips)
+        if len(decoder_out) == 3:
+            rain_pred, pwv_pred, rain_logits = decoder_out
+        else:
+            rain_pred, pwv_pred = decoder_out
+            rain_logits = None
+        out = {
             "rain_pred": rain_pred,
             "pwv_pred": pwv_pred,
             "radar_feat": fused,
         }
+        if rain_logits is not None:
+            out["rain_logits"] = rain_logits
+        return out
 
     def _encode_and_fuse(self, batch: Mapping[str, torch.Tensor],
                          return_skips: bool = False):
@@ -240,7 +253,8 @@ class Pluvian(nn.Module):
             fused, skips = self._encode_and_fuse(batch, return_skips=True)
             samples = []
             for _ in range(n_samples):
-                rain_pred, _ = self.decoder(fused, encoder_skips=skips)
+                decoder_out = self.decoder(fused, encoder_skips=skips)
+                rain_pred = decoder_out[0]
                 samples.append(rain_pred)
             return torch.stack(samples, dim=0)
         finally:

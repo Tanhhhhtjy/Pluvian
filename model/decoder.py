@@ -14,8 +14,17 @@ strict, as designed — new training starts from scratch.
 Dual heads:
   * ``rain_head``  → predicted dBZ-equivalent (or directly mm/h) future frames
   * ``pwv_head``   → predicted column water-vapour field
+
+Phase 7b T3 (MTLDM-style intensity-stratified head):
+When ``intensity_stratified=True`` the rain head emits ``n_bands`` logit
+channels instead of one. The continuous rain map returned to downstream
+losses/metrics is the softmax-weighted expectation over fixed band centers.
+Default (``intensity_stratified=False``) is numerically bit-identical to the
+pre-T3 decoder-skip baseline.
 """
 from __future__ import annotations
+
+from typing import Sequence
 
 import torch
 import torch.nn as nn
@@ -100,7 +109,9 @@ class PluvianDecoder(nn.Module):
     def __init__(self, dim: int = 192, forecast_frames: int = 18,
                  input_frames: int = 30, upsample_factor: int = 8,
                  dropout: float = 0.1, n_query_heads: int = 4,
-                 skip_channels: int | None = None):
+                 skip_channels: int | None = None,
+                 intensity_stratified: bool = False,
+                 band_centers: Sequence[float] = (0.0, 0.5, 4.5, 19.0, 50.0)):
         super().__init__()
         self.forecast_frames = forecast_frames
         self.input_frames = input_frames
@@ -133,6 +144,21 @@ class PluvianDecoder(nn.Module):
         self.rain_head = nn.Conv2d(ch, 1, 1)
         self.pwv_head = nn.Conv2d(ch, 1, 1)
         self._force_dropout = False
+
+        # Phase 7b T3 — optional MTLDM-style multi-band head.
+        # Constructed AFTER the single-channel head so the default-mode RNG
+        # consumption (and therefore weight init) matches the decoder-skip
+        # baseline exactly; ``rain_head`` is reassigned only when stratified.
+        self.intensity_stratified = bool(intensity_stratified)
+        if self.intensity_stratified:
+            self.n_bands = len(band_centers)
+            self.rain_head = nn.Conv2d(ch, self.n_bands, 1)
+            self.register_buffer(
+                "band_centers",
+                torch.tensor(tuple(band_centers), dtype=torch.float32),
+            )
+        else:
+            self.n_bands = 1
 
     def enable_mc_dropout(self, flag: bool = True) -> None:
         """Toggle MC-dropout sampling. Idempotent."""
@@ -186,10 +212,17 @@ class PluvianDecoder(nn.Module):
         for blk in self.up_blocks[1:]:
             x = blk(x)
 
-        rain = self.rain_head(x)
+        rain_out = self.rain_head(x)
         pwv = self.pwv_head(x)
-        rain = rearrange(rain, "(b t) () h w -> b t h w",
-                         b=B, t=self.forecast_frames)
         pwv = rearrange(pwv, "(b t) () h w -> b t h w",
                         b=B, t=self.forecast_frames)
+        if self.intensity_stratified:
+            logits = rearrange(rain_out, "(b t) k h w -> b t k h w",
+                               b=B, t=self.forecast_frames)
+            probs = F.softmax(logits, dim=2)
+            centers = self.band_centers.view(1, 1, -1, 1, 1)
+            rain = (probs * centers).sum(dim=2)
+            return rain, pwv, logits
+        rain = rearrange(rain_out, "(b t) () h w -> b t h w",
+                         b=B, t=self.forecast_frames)
         return rain, pwv
