@@ -72,8 +72,15 @@ def _starts_for_splits(manifest_path: Path, splits: list[str]) -> list[str]:
     starts = []
     for _, row in mf.iterrows():
         day = pd.Timestamp(row["date"])
-        for h in range(0, 24, 3):
-            starts.append((day + pd.Timedelta(hours=h)).isoformat())
+        # Phase 7a: honor per-row `starts_per_day` from the manifest. Legacy
+        # manifests without the column fall back to the historical 8/day spacing.
+        spd = int(row["starts_per_day"]) if "starts_per_day" in row and not pd.isna(row["starts_per_day"]) else 8
+        if spd <= 0:
+            continue
+        step_hours = 24.0 / spd
+        for k in range(spd):
+            offset = pd.Timedelta(hours=step_hours * k)
+            starts.append((day + offset).isoformat())
     return starts
 
 
@@ -218,6 +225,23 @@ def _csi(pred: torch.Tensor, target: torch.Tensor, thr: float) -> float:
     return hits / denom if denom > 0 else float("nan")
 
 
+def _csi_counts(pred: torch.Tensor, target: torch.Tensor, thr: float) -> tuple[int, int, int]:
+    """Return (hits, false_alarms, misses) for one batch at threshold `thr`.
+
+    Used by the Phase 7a full-set accumulator: callers sum the three integers
+    across the whole val epoch and compute CSI once at the end. Batch-averaged
+    CSI (the old behaviour) over-weighted small-rain batches and pulled the
+    val estimate around by ~0.02-0.05, which was indistinguishable from the
+    ab2-vs-ab3 deltas we were trying to compare.
+    """
+    p = (pred >= thr)
+    t = (target >= thr)
+    hits = int((p & t).sum().item())
+    fa = int((p & ~t).sum().item())
+    miss = int((~p & t).sum().item())
+    return hits, fa, miss
+
+
 def _fss_binary(pred: torch.Tensor, target: torch.Tensor, thr: float,
                 window: int) -> float:
     # binary FSS over (H,W) per (B*T) slice
@@ -232,6 +256,28 @@ def _fss_binary(pred: torch.Tensor, target: torch.Tensor, thr: float,
     num = ((fp - ft) ** 2).mean().item()
     den = ((fp ** 2).mean() + (ft ** 2).mean()).clamp(min=1e-12).item()
     return 1.0 - num / den
+
+
+def _fss_components(pred: torch.Tensor, target: torch.Tensor, thr: float,
+                    window: int) -> tuple[float, float]:
+    """Return (sum_sq_diff, sum_ref) summed across pixels for the batch.
+
+    Full-set FSS = 1 - (sum of (fp-ft)^2) / (sum of fp^2 + sum of ft^2).
+    Accumulating numerator/denominator sums gives the same answer as
+    evaluating on the concatenated tensor, unlike the batch-mean form which
+    drifted by ~0.01 per uneven batch.
+    """
+    p = (pred >= thr).float()
+    t = (target >= thr).float()
+    B, T, H, W = p.shape
+    p = p.reshape(B * T, 1, H, W)
+    t = t.reshape(B * T, 1, H, W)
+    pad = window // 2
+    fp = F.avg_pool2d(p, window, stride=1, padding=pad, count_include_pad=False)
+    ft = F.avg_pool2d(t, window, stride=1, padding=pad, count_include_pad=False)
+    num = float(((fp - ft) ** 2).sum().item())
+    den = float((fp ** 2).sum().item() + (ft ** 2).sum().item())
+    return num, den
 
 
 def _crps_marginal(pred: torch.Tensor, target: torch.Tensor) -> float:
@@ -424,9 +470,13 @@ def validate(model, loader, losses, cfg, device, dtype, epoch, writer, debug: bo
     mfd_ch = cfg["model"]["mfd_channels"] if cfg["model"]["mfd_channel_enabled"] else 0
     thresholds = (1.0, 5.0, 10.0, 30.0)
     fss_nbrs = (3, 11)
-    agg = {f"csi_{int(t)}mm": [] for t in thresholds}
-    for nbr in fss_nbrs:
-        agg[f"fss_{nbr}px"] = []
+    # Phase 7a: accumulate raw counts across the whole val epoch and compute
+    # one CSI/FSS at the end. The old per-batch average over-weighted small-
+    # rain batches by ~0.02-0.05 — same order as the ab2/ab3 deltas we were
+    # trying to compare.
+    csi_totals = {int(t): {"hits": 0, "fa": 0, "miss": 0} for t in thresholds}
+    fss_totals = {nbr: {"num": 0.0, "den": 0.0} for nbr in fss_nbrs}
+    agg = {}
     agg["data"] = []
     agg["budget"] = []
     agg["crps"] = []
@@ -453,9 +503,13 @@ def validate(model, loader, losses, cfg, device, dtype, epoch, writer, debug: bo
 
         agg["data"].append(losses["data"](rain_pred, rain_tgt_f).item())
         for thr in thresholds:
-            agg[f"csi_{int(thr)}mm"].append(_csi(rain_pred, rain_tgt_f, thr))
+            h, fa, m = _csi_counts(rain_pred, rain_tgt_f, thr)
+            ct = csi_totals[int(thr)]
+            ct["hits"] += h; ct["fa"] += fa; ct["miss"] += m
         for nbr in fss_nbrs:
-            agg[f"fss_{nbr}px"].append(_fss_binary(rain_pred, rain_tgt_f, 1.0, nbr))
+            num, den = _fss_components(rain_pred, rain_tgt_f, 1.0, nbr)
+            fss_totals[nbr]["num"] += num
+            fss_totals[nbr]["den"] += den
         agg["crps"].append(_crps_marginal(rain_pred, rain_tgt_f))
 
         if losses["budget"] is not None:
@@ -476,6 +530,13 @@ def validate(model, loader, losses, cfg, device, dtype, epoch, writer, debug: bo
     for k, vs in agg.items():
         vs = [v for v in vs if v == v]  # drop NaN
         metrics[f"val/{k}"] = float(np.mean(vs)) if vs else float("nan")
+    # Phase 7a: full-set CSI/FSS using accumulated counts.
+    for thr_int, ct in csi_totals.items():
+        denom = ct["hits"] + ct["fa"] + ct["miss"]
+        metrics[f"val/csi_{thr_int}mm"] = ct["hits"] / denom if denom > 0 else float("nan")
+    for nbr, ft in fss_totals.items():
+        metrics[f"val/fss_{nbr}px"] = (
+            1.0 - ft["num"] / ft["den"] if ft["den"] > 0 else float("nan"))
     msg = "[val] " + " ".join(f"{k.split('/')[1]}={v:.4f}" for k, v in metrics.items())
     print(msg)
     if writer is not None:
