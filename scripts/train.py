@@ -764,7 +764,21 @@ def main():
     global_step = 0
     if args.resume is not None and args.resume.exists():
         state = torch.load(args.resume, map_location=device)
-        model.load_state_dict(state["model"])
+        # Phase 7b audit M2: legacy ab1/2/3 ckpts predate U-Net skip + lead-time
+        # cross-attn + gated fusion params. strict=True crashes the resume.
+        # Use strict=False and warn loudly when the delta is large so silent
+        # architecture mismatches don't slip through.
+        result = model.load_state_dict(state["model"], strict=False)
+        n_missing = len(result.missing_keys)
+        n_unexpected = len(result.unexpected_keys)
+        if n_missing or n_unexpected:
+            print(f"[resume] non-strict load: {n_missing} missing, "
+                  f"{n_unexpected} unexpected keys")
+            if n_missing > 10 or n_unexpected > 10:
+                print(f"[resume][WARNING] >10 key delta — this looks like a "
+                      f"legacy/cross-architecture ckpt. First missing: "
+                      f"{result.missing_keys[:5]}; first unexpected: "
+                      f"{result.unexpected_keys[:5]}")
         opt.load_state_dict(state["opt"])
         start_epoch = state.get("epoch", 0) + 1
         global_step = state.get("global_step", 0)
