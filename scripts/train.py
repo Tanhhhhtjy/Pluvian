@@ -740,6 +740,7 @@ def main():
         mfd_channels=m["mfd_channels"],
         intensity_stratified=bool(m.get("intensity_stratified", False)),
         band_centers=tuple(m.get("band_centers", (0.0, 0.5, 4.5, 19.0, 50.0))),
+        gated_fusion=bool(m.get("gated_fusion", False)),
     ).to(device)
     print(f"[model] params: {model.num_parameters()/1e6:.2f}M")
 

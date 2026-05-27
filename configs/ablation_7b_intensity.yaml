@@ -9,6 +9,8 @@ model:
   era5_enabled: true
   mfd_channel_enabled: false
   intensity_stratified: true
+  # Phase 7b audit M1: explicit opt-in to the gated asymmetric fusion.
+  gated_fusion: true
 loss:
   data:
     weight: 1.0

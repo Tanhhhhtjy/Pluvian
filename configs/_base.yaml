@@ -20,6 +20,9 @@ model:
   # Phase 7b T3: MTLDM-style intensity-stratified rain head (off by default).
   intensity_stratified: false
   band_centers: [0.0, 0.5, 4.5, 19.0, 50.0]
+  # Phase 7b audit M1: legacy ab1/2/3 must keep CrossAttentionFusion. Only the
+  # 7b configs (and ab1-new) opt in by overriding this to true.
+  gated_fusion: false
 
 data:
   manifest: pipeline/manifest.csv
