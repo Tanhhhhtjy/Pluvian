@@ -75,8 +75,8 @@ def main(ckpt_path: str, out_path: str, start_time: str = "2023-07-29T02:00:00")
     # Load model from checkpoint
     print(f"  loading checkpoint...")
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-    # Try to read config out of ckpt
-    cfg = ckpt.get("cfg", None)
+    # Try to read config out of ckpt (Phase 7a saves under 'config', older 'cfg')
+    cfg = ckpt.get("config", None) or ckpt.get("cfg", None)
     if cfg is None:
         # Use ab1 base config defaults
         model = Pluvian(
@@ -93,6 +93,7 @@ def main(ckpt_path: str, out_path: str, start_time: str = "2023-07-29T02:00:00")
         m = cfg.get("model", {})
         model = Pluvian(
             pwv_enabled=m.get("pwv_enabled", False),
+            pwv_concat_only=m.get("pwv_concat_only", False),
             era5_enabled=m.get("era5_enabled", False),
             mfd_channel_enabled=m.get("mfd_channel_enabled", False),
             forecast_frames=m.get("forecast_frames", 18),
@@ -100,6 +101,9 @@ def main(ckpt_path: str, out_path: str, start_time: str = "2023-07-29T02:00:00")
             hidden_dim=m.get("hidden_dim", 192),
             n_layers=m.get("n_layers", 4),
             n_heads=m.get("n_heads", 8),
+            gated_fusion=m.get("gated_fusion", False),
+            intensity_stratified=m.get("intensity_stratified", False),
+            band_centers=tuple(m.get("band_centers", (0.0, 0.5, 4.5, 19.0, 50.0))),
         )
     model.load_state_dict(ckpt["model"], strict=False)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
