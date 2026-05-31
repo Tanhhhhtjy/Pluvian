@@ -76,7 +76,14 @@ do_shutdown() {
     log "Shutdown attempts exhausted. User must manually stop instance."
 }
 
-CONFIG_NOW=$PLUVIAN/configs/ablation_1_radar_only.yaml
+if [ -n "${1:-}" ]; then
+    case "$1" in
+        /*) CONFIG_NOW="$1" ;;
+        *)  CONFIG_NOW="$PLUVIAN/$1" ;;
+    esac
+else
+    CONFIG_NOW=$PLUVIAN/configs/ablation_1_radar_only.yaml
+fi
 CHECK_INTERVAL=60
 
 log "Watchdog start. monitoring: $CONFIG_NOW, interval=${CHECK_INTERVAL}s"

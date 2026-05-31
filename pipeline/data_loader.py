@@ -91,8 +91,11 @@ class NPJDataset(Dataset):
         # PWV: 30 min steps
         n_pwv = max(1, self.window_minutes // 30)
         pwv_vals, pwv_mask, pwv_coords = pwv_io.load_pwv_window(start, n_pwv)
-        # 9 月鲁棒性集：PWV 通道清零（手动开关或自动从 split 触发）
-        if self.drop_pwv or meta.get("split") == "test_robust":
+        # PWV 通道清零仅由显式 drop_pwv 开关控制（用于 +PWV ablation 的对照评估）。
+        # 注意：旧逻辑曾对 test_robust 自动清零——那是因为旧 test_robust 在 9 月、
+        # 本就无 PWV。新划分(Phase 7c)把 test_robust 移到 5–8 月 PWV 覆盖期，必须
+        # 保留其真实 PWV，否则留出测试会被悄悄抹掉 PWV。
+        if self.drop_pwv:
             pwv_vals[:] = 0.0
             pwv_mask[:] = 0.0
 

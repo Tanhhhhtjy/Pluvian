@@ -1,0 +1,33 @@
+name: ablation_1_new_7b_p7c
+inherits: _base.yaml
+model:
+  pwv_enabled: false
+  pwv_concat_only: false
+  era5_enabled: false
+  mfd_channel_enabled: false
+  gated_fusion: false
+  intensity_stratified: true
+  band_centers: [0.0, 0.5, 4.5, 19.0, 50.0]
+loss:
+  data:
+    type: intensity
+    weight: 1.0
+  intensity:
+    ce_weight: 1.0
+    reg_weight: 1.0
+    band_edges: [0.1, 1.0, 8.0, 30.0]
+    band_sample_weights: [0.1, 1.0, 2.0, 4.0, 8.0]
+  fss:
+    enabled: true
+    thresholds: [1.0, 10.0, 30.0]
+    threshold_weights: [1.0, 0.1, 0.1]
+    window: 9
+    weight: 0.1
+  budget:
+    enabled: false
+hardware:
+  precision: bf16
+  grad_accum: 4
+data:
+  batch_size: 1
+  num_workers: 8

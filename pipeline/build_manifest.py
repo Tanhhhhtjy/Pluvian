@@ -1,20 +1,32 @@
 """Build pipeline/manifest.csv.
 
-Phase 7a (audit 2026-05-27): the split policy is now leakage-aware.
-The old val set was the 23·7 京津冀 暴雨 case (2023-07-29 ~ 08-01) — the
-same 4 days that the case study figures visualize. Using it for both
-model selection AND the marquee figure is data leakage.
+Phase 7c (data-defect fix 2026-05-30): the split is now constrained to the
+radar∩PWV intersection so the +PWV ablation is valid end-to-end.
 
-New splits:
-  * train       (May-Aug days with radar, minus 23·7 case)         8 starts/day
-  * val         (first half of September: 7 robust-test days)     24 starts/day
-  * test_robust (second half of September: 7 robust-test days)    24 starts/day
-  * event_test  (the 23·7 case study — Figure 1 only)             24 starts/day
+Two unrecoverable data defects forced this:
+  1. GNSS-PWV files only cover 2023-02~08 (no September). The previous split
+     placed val (Sept 1–10) and test_robust (Sept 11–25) entirely in
+     September → both had PWV=0. Model selection (best.pt) ran on a no-PWV
+     val, blind to PWV gain; val/test ab2-vs-ab1 deltas were architecture
+     confounds, not PWV effects.
+  2. Radar is genuinely missing on some heavy-rain days (README claims only
+     dry days were omitted, but stations PRE_1h shows ~10 May–Aug days with
+     widespread heavy rain and no radar). Those stay dropped.
+
+New splits — ALL within the May–Aug radar∩PWV window; September is dropped
+entirely (it has radar but no PWV, so it cannot serve a PWV ablation):
+  * event_test  (23·7 case 07-29~08-01, Figure 1 only)            24 starts/day
+  * val         (8 stratified May–Aug radar days, model select)   24 starts/day
+  * test_robust (8 stratified May–Aug radar days, held out)       24 starts/day
+  * train       (remaining May–Aug radar days)                     8 starts/day
   * train       (zero-day no-radar weak-rain days)                 8 starts/day
+  * drop        (no-radar heavy-rain days — unusable, no radar)    0
 
-This separates the model-selection signal from the figure-1 case and
-keeps train sample count at the historical 816 (102 × 8) while giving
-val a larger 168-sample (7 × 24) base for tighter CI.
+val/test are stratified across months and rain intensity (each spans
+May–Aug and holds ≥1 day with 50–84 mm/h peak rain plus moderate/light
+days) so the held-out sets are not all-dry. Caveat for the paper: this is
+day-level holdout; a few held-out days share a multi-day synoptic process
+with train days (weak temporal adjacency leakage, standard in nowcasting).
 """
 from __future__ import annotations
 import argparse
@@ -30,15 +42,17 @@ OUT = Path(__file__).resolve().parent / "manifest.csv"
 EVENT_TEST_DAYS = pd.to_datetime(["2023-07-29", "2023-07-30", "2023-07-31",
                                   "2023-08-01"])
 
-# September robust-test pool. Split deterministically by date: the earlier
-# half becomes val (model selection); the later half is held-out test.
-_SEPT_VAL_DAYS = pd.to_datetime([
-    "2023-09-01", "2023-09-02", "2023-09-03",
-    "2023-09-07", "2023-09-08", "2023-09-09", "2023-09-10",
+# Model-selection set: 8 radar-present May–Aug days, stratified across months
+# and rain intensity (heavy / moderate / light). All have PWV.
+VAL_DAYS = pd.to_datetime([
+    "2023-05-12", "2023-05-19", "2023-06-19", "2023-06-28",
+    "2023-07-12", "2023-07-24", "2023-08-11", "2023-08-23",
 ])
-_SEPT_TEST_DAYS = pd.to_datetime([
-    "2023-09-11", "2023-09-15", "2023-09-16", "2023-09-17",
-    "2023-09-23", "2023-09-24", "2023-09-25",
+# Held-out generalization set: 8 radar-present May–Aug days, same
+# stratification, includes 50–84 mm/h heavy-rain days. All have PWV.
+TEST_ROBUST_DAYS = pd.to_datetime([
+    "2023-05-17", "2023-05-31", "2023-06-11", "2023-06-26",
+    "2023-07-03", "2023-07-18", "2023-08-08", "2023-08-20",
 ])
 
 
@@ -51,6 +65,10 @@ def build(train_starts: int = 8, val_starts: int = 24,
         if has_radar:
             if d in EVENT_TEST_DAYS:
                 split, spd = "event_test", event_starts
+            elif d in VAL_DAYS:
+                split, spd = "val", val_starts
+            elif d in TEST_ROBUST_DAYS:
+                split, spd = "test_robust", test_starts
             else:
                 split, spd = "train", train_starts
             rows.append({"date": d.strftime("%Y-%m-%d"),
@@ -72,20 +90,8 @@ def build(train_starts: int = 8, val_starts: int = 24,
                              "n_wet": int(n_wet),
                              "starts_per_day": 0})
 
-    for d in pd.date_range("2023-09-01", "2023-09-30", freq="D"):
-        if not radar_io.has_radar_day(d):
-            continue
-        if d in _SEPT_VAL_DAYS:
-            split, spd = "val", val_starts
-        elif d in _SEPT_TEST_DAYS:
-            split, spd = "test_robust", test_starts
-        else:
-            # Unanticipated September radar day — keep as test_robust by default
-            split, spd = "test_robust", test_starts
-        rows.append({"date": d.strftime("%Y-%m-%d"),
-                     "split": split, "zero_day": False,
-                     "pre_total_mm": None, "n_wet": None,
-                     "starts_per_day": spd})
+    # September is dropped entirely: it has radar but no PWV (PWV ends in
+    # August), so it cannot serve the +PWV ablation or model selection.
 
     df = pd.DataFrame(rows)
     df.to_csv(OUT, index=False)
