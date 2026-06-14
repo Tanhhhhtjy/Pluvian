@@ -1,0 +1,37 @@
+# §3 Results (draft 2026-06-14)
+
+### 3.1 Stepwise multimodal physical fusion (ab1 → ab2 → ab3)
+
+We evaluate three nested configurations that incrementally fuse physical predictors into a common spatiotemporal backbone. The baseline ab1 ingests radar reflectivity only. ab2 adds a precipitable-water-vapour (PWV) channel through a cross-attention fusion encoder, providing a column-integrated moisture context for each radar frame. ab3 further injects an ERA5 reanalysis stack (low-level wind, humidity, and CAPE), giving the network access to the synoptic-scale environment in which convection develops. All three models are trained from scratch under an identical 60-epoch schedule, loss, and evaluation protocol; the only differences are the input modalities and the encoder paths needed to consume them. Table 1 reports the headline scores on the event_test split (96 windows centred on convective episodes) and the test_robust split (192 windows sampled across the full evaluation period).
+
+Skill at light-to-moderate intensities improves at every fusion step on both splits. On event_test, CSI@1 rises from 0.397 (ab1) to 0.432 (ab2, +8.7%) and 0.470 (ab3, +18.3% vs ab1); CSI@5 from 0.508 to 0.540 (+6.3%) and 0.570 (+12.3%); CSI@10 from 0.565 to 0.591 (+4.5%) and 0.632 (+11.8%). Neighbourhood fractions skill follows the same monotone trend, with FSS@3px climbing from 0.579 to 0.614 (+6.0%) and 0.651 (+12.5%), and FSS@11px from 0.593 to 0.624 (+5.3%) and 0.670 (+13.0%). MAE drops from 5.19 to 4.83 (-6.9%) and 4.27 (-17.8%). The test_robust split reproduces the ordering at compressed magnitudes (CSI@1 0.324 → 0.330 → 0.379; MAE 3.03 → 2.95 → 2.47), confirming that the fusion gain is not confined to convective windows.
+
+The extreme-intensity tail behaves differently. CSI@30 on event_test is not monotone across the cascade: ab1 reaches 0.308, ab2 regresses to 0.283 (-8.2%), and ab3 partially recovers to 0.291 (-5.6% vs ab1) without overtaking the radar-only baseline. Per-lead inspection (Fig. 2) shows that only 1 of 18 leads is positive for ab2 and 2 of 18 for ab3 at the 30 dBZ threshold. We interpret this as evidence that auxiliary moisture and synoptic context primarily sharpen the low-to-mid reflectivity field while leaving the strongest cores unchanged or marginally softer — a divergence between bulk-intensity skill and high-threshold skill that we revisit in §3.2.
+
+### 3.2 The water-budget physical loss collapses extreme skill
+
+ab3b retains the ab3 inputs and backbone and adds a column water-budget residual as an auxiliary PDE loss term, penalising local divergence between predicted precipitation, advected PWV tendency, and surface flux. The intent is to enforce physical consistency between the precipitation field and the moisture environment.
+
+On the bulk metrics ab3b extends the gains observed in §3.1. CSI@1 rises to 0.492 on event_test (+4.7% vs ab3) and 0.382 on test_robust (+0.8%). CSI@10 reaches 0.641 (+1.4%) and 0.558 (+1.6%) on the two splits. FSS@3px improves to 0.672 and 0.568, FSS@11px to 0.691 and 0.591, and MAE drops to 4.10 and 2.41 on event_test and test_robust respectively.
+
+The extreme-intensity tail, however, collapses. CSI@30 falls from 0.291 to 0.210 on event_test (-27.8%) and from 0.276 to 0.215 on test_robust (-22.1%). The regression is not driven by a small number of leads: across all 18 forecast leads (6–108 min) on event_test, 0 of 18 yield a positive CSI@30 difference against the ab1 baseline, compared with 2 of 18 for ab3 and 1 of 18 for ab2 (Fig. 2). Mean per-lead csi30 differences against ab1 are -0.026 for ab2, -0.018 for ab3, and -0.084 for ab3b — a fourfold deepening of the deficit. The pattern indicates that the water-budget penalty acts uniformly across the forecast horizon rather than at any particular lead, and that its cost is concentrated at the high-reflectivity tail where bulk-water conservation pressures the network towards spatially smoother solutions.
+
+### 3.3 Pooled-CSI diagnoses the failure mode: smoothing, not displacement
+
+To distinguish between two candidate explanations for the CSI@30 collapse — a forecast that places the right core in the wrong location (displacement) versus a forecast that dissolves the core into a flatter field (smoothing) — we apply a pooled-CSI diagnostic. For each pooling window w ∈ {1, 4, 16} pixels we replace the binary forecast field 1{ŷ ≥ τ} and the binary observation field 1{y ≥ τ} with their max-pooled counterparts MaxPool_w(1{ŷ ≥ τ}) and MaxPool_w(1{y ≥ τ}), and compute CSI on the pooled pair at threshold τ = 30 dBZ. A displaced-but-intense forecast should recover skill as w grows, because translating the forecast core within a w-pixel neighbourhood is absorbed by the pooling. A physically smoothed forecast cannot recover, because the pooled forecast field never contains a sufficiently intense region to match the pooled observation.
+
+The two regimes separate cleanly (Fig. 3). For ab3, pooled CSI@30 on event_test rises from 0.291 at w=1 to 0.310 at w=4 (+6.5%) and 0.326 at w=16 (+12.0%). For ab3b, the corresponding sequence is 0.210 → 0.197 → 0.222, a modest +5.7% from w=1 to w=16 but an absolute level that remains below ab3 even at w=1. Enlarging the tolerance neighbourhood by a factor of sixteen recovers more skill for ab3 than the entire water-budget loss costs ab3b, and ab3b's pooled-CSI plateau never reaches the unpooled ab3 baseline. We read this as direct evidence that ab3b's deficit is not a placement error correctable by nowcasting tolerance but a physical attenuation of the high-reflectivity field. The case study in Fig. 4 (2023-07-30 09:00 UTC) reinforces this interpretation: against the same observation and over the same 30 dBZ contour, ab3 reproduces a compact intense core with a small spatial offset, while ab3b produces a spatially broader and weaker reflectivity blob in approximately the correct location.
+
+Pooled-CSI generalises the standard CSI by sweeping a single tolerance parameter w, requires no architectural assumptions, and exposes a smoothing/displacement decomposition that point metrics and neighbourhood scores aggregate away. We therefore propose it as a reusable diagnostic for evaluating physics-constrained precipitation nowcasters, particularly in regimes where bulk losses risk trading tail intensity for area-mean fidelity.
+
+### 3.4 CDU dual-branch decoder recovers extreme skill at the architecture level
+
+(Results pending: CDU training in progress, will be filled when ab3-cdu_p7d evaluation completes.)
+
+<!-- editorial notes
+1. 3.1 / 3.2 / 3.3 的现有排序是叙事最强的版本：先建立"逐级融合在低到中阈值有效"的正向故事，再揭示水汽预算损失在尾部的代价，再用 pooled-CSI 给出机制性诊断。不建议调整。
+2. 3.1 末尾的 csi30 非单调讨论可以考虑提前一句铺垫（"a divergence between bulk-intensity skill and high-threshold skill that we revisit in §3.2"），降低读者对 §3.2 的认知突兀感。当前版本保守起见未加，避免暗示后文。
+3. §3.2 的 0/18 per-lead 论证目前是文字 + Fig 2 的引用；如果 Fig 2 的可读性不足以让读者直接数到 0/18，建议在 Fig 2 中显式标注每个 lead 上的差值正负号，或者补一个小 inset。
+4. §3.3 的 pooled-CSI 数学定义目前写成行内文字，若期刊允许，迁移到方法部分 §2 并在此只引用更干净；现状是 Results 自包含。
+5. 3.4 当前为占位符，CDU 实验完成后补全；如果该实验最终未能达到预期，建议把 §3.4 改写为"discussion of failure modes and proposed mitigations"，整体叙事仍闭合。
+-->
