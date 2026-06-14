@@ -1,6 +1,6 @@
 # Pluvian Paper Tables 1 and 2
 
-Headline deterministic skill scores for the four model variants on the two evaluation splits. CRPS is omitted because the deterministic single-member CRPS reduces to MAE (see `_crps_marginal` in `scripts/train.py`).
+Headline deterministic skill scores for the four model variants on the two evaluation splits.
 
 ### Table 1. Deterministic skill on event_test (4 storm days)
 
@@ -22,4 +22,4 @@ _Split: event_test (4 days, 96 forecast windows). CSI thresholds in mm h$^{-1}$;
 | ab3 (+ERA5) | 0.379 [0.268, 0.453] | 0.495 [0.374, 0.562] | 0.549 [0.416, 0.607] | **0.276 [0.236, 0.292]** | 0.565 [0.438, 0.638] | 0.588 [0.462, 0.659] | 2.475 [1.629, 3.435] |
 | ab3b (+water-budget loss) | **0.382 [0.259, 0.467]** | **0.500 [0.370, 0.575]** | **0.558 [0.421, 0.618]** | *0.215 [0.178, 0.244] (down)* | **0.568 [0.426, 0.652]** | **0.591 [0.449, 0.674]** | **2.409 [1.633, 3.299]** |
 
-_Split: test_robust (8 days, 192 forecast windows). CSI thresholds in mm h$^{-1}$; FSS neighbourhood in grid pixels (1 pixel = 0.01$^\circ$ $\approx$ 1.1 km). MAE in mm h$^{-1}$. Brackets show day-stratified bootstrap 95% CI (n_boot = 1000). Bold marks the best value per column; ab3b CSI@30 is italicised with a down arrow to flag the inverse direction of its regression._
+_Split: test_robust (8 days, 192 forecast windows). CSI thresholds in mm h$^{-1}$; FSS neighbourhood in grid pixels (1 pixel = 0.01$^\circ$ $\approx$ 1.1 km). MAE in mm h$^{-1}$. Brackets show day-stratified bootstrap 95% CI (n_boot = 1000). Bold marks the best value per column; ab3b CSI@30 is italicised with a down arrow to flag the inverse direction of its regression. Paired bootstrap delta CIs for the ab3→ab3b CSI@30 change are reported in §3.2 (event_test: [−0.091, −0.057]; test_robust: [−0.078, −0.019])._

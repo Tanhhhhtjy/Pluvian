@@ -36,6 +36,10 @@ MODEL_SPECS: list[tuple[str, dict[str, str]]] = [
         "event_test": "ckpt/bootstrap_ci/ab3b_era5_budget/ab3b_era5_event_test_ci.json",
         "test_robust": "ckpt/bootstrap_ci/ab3b_era5_budget/ab3b_era5_test_robust_ci.json",
     }),
+    ("ab3-cdu (+CDU decoder)", {
+        "event_test": "ckpt/bootstrap_ci/ab3_cdu/ab3-cdu_event_test_ci.json",
+        "test_robust": "ckpt/bootstrap_ci/ab3_cdu/ab3-cdu_test_robust_ci.json",
+    }),
 ]
 
 METRIC_COLS = [

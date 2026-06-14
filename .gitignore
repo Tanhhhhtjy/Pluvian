@@ -70,3 +70,6 @@ figures/mechanism/
 
 # Debug configs (smoke/sanity only, not used for paper results)
 configs/debug_*
+
+# Pooled bootstrap row dir is a workspace, not a result
+ckpt/bootstrap_ci/_pooled_rows/

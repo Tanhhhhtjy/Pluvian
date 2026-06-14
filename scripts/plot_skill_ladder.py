@@ -19,18 +19,21 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # Model order (left-to-right) and visual encoding.
-MODELS = [
+MODELS_BASE = [
     ("ab1", "radar"),
     ("ab2", "+PWV"),
     ("ab3", "+ERA5"),
     ("ab3b", "+budget loss"),
 ]
-# ab1->ab3 use a blue ramp (monotonic-fusion story), ab3b uses red (negative).
+MODEL_CDU = ("ab3-cdu", "+CDU decoder")
+# ab1->ab3 use a blue ramp (monotonic-fusion story), ab3b uses red (negative),
+# ab3-cdu uses green to flag the recovery path on top of ab3 (no budget loss).
 COLORS = {
     "ab1": "#bcd6ec",
     "ab2": "#7faedb",
     "ab3": "#2b6cb0",
     "ab3b": "#c53030",
+    "ab3-cdu": "#38a169",
 }
 SPLITS = ["event_test", "test_robust"]
 THRESHOLDS = [1, 10, 30]
@@ -40,6 +43,7 @@ SOURCES = {
     "ab2":  ("bootstrap_ci", "xcoreA_{split}_ci.json"),
     "ab3":  ("eval", "ablation_3_era5_p7c/{split}/metric.json"),
     "ab3b": ("eval", "ablation_3b_era5_budget_p7c/{split}/metric.json"),
+    "ab3-cdu": ("eval", "ablation_3_cdu_p7d/{split}/metric.json"),
 }
 
 
@@ -62,23 +66,31 @@ def main() -> None:
     ap.add_argument("--root", type=Path, default=Path("."))
     ap.add_argument("--out", type=Path,
                     default=Path("ckpt/figures/paper_skill_bar/skill_ladder.png"))
+    ap.add_argument("--include-cdu", action="store_true",
+                    help="append ab3-cdu (CDU dual-branch decoder) as a 5th model")
     args = ap.parse_args()
+
+    models = list(MODELS_BASE)
+    if args.include_cdu:
+        models.append(MODEL_CDU)
+    n_models = len(models)
 
     # collect: vals[split][thr] = list of (model, value)
     vals: dict[str, dict[int, list[float]]] = {sp: {t: [] for t in THRESHOLDS} for sp in SPLITS}
     for sp in SPLITS:
-        for model, _label in MODELS:
+        for model, _label in models:
             metric = _read(model, sp, args.root)
             for t in THRESHOLDS:
                 vals[sp][t].append(metric[f"csi_{t}mm"])
 
-    fig, axes = plt.subplots(1, 2, figsize=(11.0, 4.4), sharey=True)
-    bar_w = 0.2
+    fig, axes = plt.subplots(1, 2, figsize=(11.0 + (1.5 if args.include_cdu else 0.0), 4.4), sharey=True)
+    bar_w = 0.8 / n_models  # span ~0.8 of the unit slot, regardless of model count
+    center_off = (n_models - 1) / 2.0
     x = np.arange(len(THRESHOLDS))
     for ax, sp in zip(axes, SPLITS):
-        for i, (model, label) in enumerate(MODELS):
+        for i, (model, label) in enumerate(models):
             ys = [vals[sp][t][i] for t in THRESHOLDS]
-            offsets = x + (i - 1.5) * bar_w
+            offsets = x + (i - center_off) * bar_w
             bars = ax.bar(offsets, ys, width=bar_w, color=COLORS[model],
                           edgecolor="#2b2b2b", linewidth=0.6,
                           label=f"{model} ({label})")
@@ -88,11 +100,11 @@ def main() -> None:
                         f"{y:.3f}", ha="center", va="bottom",
                         fontsize=7.5, color="#222")
         # mark the csi30 reversal with a dashed connector ab3 -> ab3b
-        i_ab3 = 2
-        i_ab3b = 3
+        i_ab3 = next(i for i, (m, _) in enumerate(models) if m == "ab3")
+        i_ab3b = next(i for i, (m, _) in enumerate(models) if m == "ab3b")
         i_thr30 = 2
-        x_ab3 = x[i_thr30] + (i_ab3 - 1.5) * bar_w
-        x_ab3b = x[i_thr30] + (i_ab3b - 1.5) * bar_w
+        x_ab3 = x[i_thr30] + (i_ab3 - center_off) * bar_w
+        x_ab3b = x[i_thr30] + (i_ab3b - center_off) * bar_w
         y_ab3 = vals[sp][30][i_ab3]
         y_ab3b = vals[sp][30][i_ab3b]
         ax.annotate("", xy=(x_ab3b, y_ab3b + 0.005),

@@ -8,7 +8,7 @@ Compiled draft date: 2026-06-14. Section 3.4 (CDU dual-branch decoder results) i
 
 ## Abstract (draft 2026-06-14, ~200 words)
 
-Short-term precipitation nowcasting over North China remains difficult due to convective intermittency and underused multimodal context. We present a 6-minute-resolution, 108-minute deep-learning nowcasting framework that progressively fuses radar with column water vapour (PWV) and ERA5 large-scale environmental fields. Stepwise fusion yields monotonic improvement across CSI at 1/5/10 mm h⁻¹, FSS, and MAE on an event-based test set (CSI@10 0.565→0.632, MAE 5.19→4.27); the extreme-intensity CSI@30 dips slightly at the PWV step and is recovered to near the radar baseline by ERA5, but is not improved beyond it. Pushing further with a physically motivated water-budget loss improves light-to-moderate skill but causes extreme CSI@30 to collapse from 0.291 to 0.210 (−28%) on event_test and from 0.276 to 0.215 (−22%) on test_robust, with 0 of 18 forecast leads exhibiting a positive change relative to the radar baseline. Using a pooled-CSI diagnostic with neighbourhood max-pool tolerance (window sizes 1, 4, 16 pixels), we show this is not spatial displacement but physical smoothing of convective cores — a differentiating negative result for physics-informed loss design in nowcasting. We further introduce Cubic Dual Upsampling (CDU), a dual-branch decoder combining low-frequency bicubic interpolation with high-frequency PixelShuffle residuals, designed to restore extreme skill at the architecture level without loss reweighting; results are pending.
+Short-term precipitation nowcasting over North China remains difficult due to convective intermittency and underused multimodal context. We present a 6-minute-resolution, 108-minute deep-learning nowcasting framework that progressively fuses radar with column water vapour (PWV) and ERA5 large-scale environmental fields. Stepwise fusion yields monotonic improvement across CSI at 1/5/10 mm h⁻¹, FSS, and MAE on an event-based test set (CSI@10 0.565→0.632, MAE 5.19→4.27); CSI@30 is non-monotonic across the cascade (ab1 0.308, ab2 0.283, ab3 0.291) and we revisit this in §3.2. Pushing further with a physically motivated water-budget loss improves light-to-moderate skill but causes extreme CSI@30 to collapse from 0.291 to 0.210 (−28%; paired bootstrap 95% CI [−0.091, −0.057], n=2000) on event_test and from 0.276 to 0.215 (−22%; 95% CI [−0.078, −0.019]) on test_robust, with 0 of 18 forecast leads exhibiting a positive change relative to the radar baseline. Using a pooled-CSI diagnostic with neighbourhood max-pool tolerance (window sizes 1, 4, 16 pixels), we show this is not spatial displacement but physical smoothing of convective cores — a differentiating negative result for physics-informed loss design in nowcasting. We further introduce Cubic Dual Upsampling (CDU), a dual-branch decoder combining low-frequency bicubic interpolation with high-frequency PixelShuffle residuals, that we hypothesise can restore extreme skill at the architecture level without loss reweighting; results are pending. All evaluation is restricted to four storm days and eight non-storm days over North China in May–August 2023; we therefore phrase methodological claims as proposed practice rather than universal prescriptions.
 
 ---
 
@@ -38,12 +38,15 @@ To be expanded; in-text uses `[Author Year]`.
 - Andrychowicz et al. 2023 — MetNet-3
 - Bevis et al. 1992 — GPS meteorology / PWV
 - Bi et al. 2023 — Pangu-Weather
+- Ebert 2008 — neighbourhood verification
 - Gao et al. 2022 — Earthformer
+- Gilleland 2009 — verification of spatial forecasts
 - Hersbach et al. 2020 — ERA5
 - Lam et al. 2023 — GraphCast
+- Mittermaier 2014 — fuzzy verification
 - Ravuri et al. 2021 — DGMR (Nature)
 - Roberts & Lean 2008 — FSS
-- Yang et al. 2026 — exPreCast (ICLR), Cubic Dual Upsampling
+- Song et al. 2026 — exPreCast (ICLR), Cubic Dual Upsampling
 - Zhang et al. 2023 — NowcastNet (Nature)
 
 ## Outstanding tasks before submission

@@ -1,0 +1,40 @@
+name: ablation_3b_era5_budget_w001_p7c
+inherits: _base.yaml
+model:
+  # C5 sensitivity: ab3b with budget weight 0.01 (10x weaker than main ab3b).
+  # All other config bit-identical to ablation_3b_era5_budget_p7c.
+  pwv_enabled: true
+  pwv_concat_only: false
+  era5_enabled: true
+  mfd_channel_enabled: false
+  gated_fusion: true
+  intensity_stratified: true
+  band_centers: [0.0, 0.5, 4.5, 19.0, 50.0]
+loss:
+  data:
+    type: intensity
+    weight: 1.0
+  intensity:
+    ce_weight: 1.0
+    reg_weight: 1.0
+    band_edges: [0.1, 1.0, 8.0, 30.0]
+    band_sample_weights: [0.1, 1.0, 2.0, 4.0, 8.0]
+  fss:
+    enabled: true
+    thresholds: [1.0, 10.0, 30.0]
+    threshold_weights: [1.0, 0.1, 0.1]
+    window: 9
+    weight: 0.1
+  budget:
+    enabled: true
+    weight: 0.01
+    delta_p_pa: 30000.0
+    smooth_sigma: 2.0
+    huber_delta: 1.0e-4
+    level_idx: 1
+hardware:
+  precision: bf16
+  grad_accum: 4
+data:
+  batch_size: 1
+  num_workers: 2

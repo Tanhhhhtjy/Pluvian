@@ -24,7 +24,7 @@ The decoder begins with a per-spatial-location cross-attention mapping T_in fuse
 
 ## 2.3 Cubic Dual Upsampling (CDU) decoder
 
-In the CDU variant (ab3-cdu, ~6.91 M parameters; the +0.25 M delta is entirely in the three decoder upsample blocks) the standard `PixelShuffle ×2 → Conv → GN → GELU` block is replaced by a dual-branch `_CDUUpBlock` adapted from exPreCast [Yang et al. ICLR 2026]. Each block has a **low-frequency branch** (bicubic interpolation ×2 + 1×1 channel projection) for the smooth field and a **high-frequency branch** (3×3 conv to 4·out_ch channels + `PixelShuffle ×2`) for strong-convective texture as a learnable residual; the two outputs are concatenated and fused by 3×3 conv + GroupNorm + GELU. The motivation is that a single PixelShuffle path tends to smooth high-intensity cores during upsampling; the bicubic branch lets the network preserve the envelope explicitly, freeing the PixelShuffle branch to specialise in residual sharpness.
+In the CDU variant (ab3-cdu, ~6.91 M parameters; the +0.25 M delta is entirely in the three decoder upsample blocks) the standard `PixelShuffle ×2 → Conv → GN → GELU` block is replaced by a dual-branch `_CDUUpBlock` adapted from exPreCast [Song et al. ICLR 2026]. Each block has a **low-frequency branch** (bicubic interpolation ×2 + 1×1 channel projection) for the smooth field and a **high-frequency branch** (3×3 conv to 4·out_ch channels + `PixelShuffle ×2`) for strong-convective texture as a learnable residual; the two outputs are concatenated and fused by 3×3 conv + GroupNorm + GELU. The motivation is that a single PixelShuffle path tends to smooth high-intensity cores during upsampling; the bicubic branch lets the network preserve the envelope explicitly, freeing the PixelShuffle branch to specialise in residual sharpness.
 
 The CDU substitution is the **only** delta between ab3 and ab3-cdu: data pipeline, loss configuration, optimizer, LR schedule, training horizon, mixed precision and random seed are bit-identical. The CDU run is warm-started from the converged ab3 checkpoint; the eighteen new CDU-branch parameter tensors are randomly initialised, and the optimizer and LR schedule are reset.
 
@@ -35,8 +35,6 @@ The rain head emits five intensity bands with centres (0, 0.5, 4.5, 19, 50) mm h
 An auxiliary **fractions skill score (FSS)** term is added at thresholds τ ∈ {1, 10, 30} mm h⁻¹ with relative weights (1.0, 0.1, 0.1) and a 9 × 9 averaging window, contributing a fixed multiplier 0.1 to the total loss.
 
 For the budget variant (ab3b) we add a soft physics constraint  ε = ∂PWV/∂t + (Δp / g) · ∇·(q V) + P  whose residual ε is penalised with a Huber loss (δ = 10⁻⁴ mm s⁻¹) [Trenberth 1991]. Here PWV is the predicted column water vapour, V = (u, v) and q are the ERA5 fields at 850 hPa (`level_idx = 1`), Δp = 3 × 10⁴ Pa is a 700–1000 hPa column-thickness proxy that converts single-level horizontal moisture flux divergence to column-integrated VIMFD, and P is the predicted rain rate divided by 3600. Divergence is computed on the sphere with a σ = 2 grid-point Gaussian pre-smoothing. The budget term enters the total loss with weight 0.1 in ab3b and 0.0 elsewhere.
-
-Note: a CRPS column is recorded at validation time, but the helper `_crps_marginal` degenerates to single-member CRPS, which is algebraically equal to MAE. We therefore only report MAE in §3.
 
 ## 2.5 Training protocol
 
@@ -52,16 +50,6 @@ We report **CSI** at τ ∈ {1, 5, 10, 30} mm h⁻¹, **FSS** at neighbourhood w
 
   pooled-CSI(ŷ, y, τ, w) = CSI( MaxPool_w(𝟙{ŷ ≥ τ}), MaxPool_w(𝟙{y ≥ τ}) )
 
-where MaxPool_w is a w × w **non-overlapping** max-pool with `ceil_mode=True` — we follow this convention (rather than the more common stride-1 sliding window) to align with exPreCast [Yang et al. ICLR 2026]. With w ∈ {1, 4, 16}, w = 1 reduces to exact-grid CSI; a CSI that recovers as w grows isolates a displacement failure, while one that stays low indicates an amplitude failure. **Per-lead diagnostics** report CSI/FSS separately at each lead 6 min ≤ t ≤ 108 min.
+where MaxPool_w is a w × w **non-overlapping** max-pool with `ceil_mode=True` — we follow this convention (rather than the more common stride-1 sliding window) to align with exPreCast [Song et al. ICLR 2026]. With w ∈ {1, 4, 16}, w = 1 reduces to exact-grid CSI; a CSI that recovers as w grows isolates a displacement failure, while one that stays low indicates an amplitude failure. **Per-lead diagnostics** report CSI/FSS separately at each lead 6 min ≤ t ≤ 108 min.
 
 `event_test` (96 windows) probes peak-intensity behaviour; `test_robust` (192 windows) probes calibration on near-climatology conditions. Uncertainty is quantified by paired **day-bootstrap** confidence intervals (n_boot = 1000, fixed seed) over manifest dates, recomputing CSI/FSS from raw counts within each resample.
-
-<!-- editorial notes -->
-<!--
-1. 用户在 prompt 写 "6 frames history + 18 frames forecast = 30 frames"，但代码 _base.yaml input_frames=12 / forecast_frames=18，总 30 帧 = 180 min。我按代码事实写成 12+18，请确认（如果实际跑的 ab3 yaml 重载了 input_frames=6，需要更正）。
-2. 用户说 "Marshall-Palmer Z–R"，但 utils.py 注释明确为"China operational Z=300 R^1.4"。我按代码写成 Fulton 1998（WSR-88D PPS 的同一公式来源），更贴切；要不要换 Marshall-Palmer 引用请定。
-3. 用户给 "H100 80 GB / ~1220 s/epoch"，但 nvidia-smi 在本机是 RTX 4090 24 GB，log 实测平均 ~1100 s/epoch（区间 1020–1390）。我用了实测数 + [VERIFY:] 标签等你定卡型。
-4. Pooled-CSI 用户给的是 stride-1 sliding 公式，但代码 eval_pooled_csi.py 是 stride=pool 非重叠（pools=[1,4,16]）。我按代码事实写并显式说明与"通常 stride-1"的差别。如果论文想统一写 stride-1，需要先改代码再重跑。
-5. 没把 spectral loss / MFD channel 写进正文——ab3/ab3b/ab3-cdu 都没启用。
-6. 引用全用占位（Fulton 1998, Trenberth 1991, Yang ICLR 2026），等参考文献列表统一时替换。
--->
