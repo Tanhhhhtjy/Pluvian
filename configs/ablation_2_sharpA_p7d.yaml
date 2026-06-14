@@ -1,14 +1,17 @@
-name: ablation_2_new_7b_p7c
+name: ablation_2_sharpA_p7d
 inherits: _base.yaml
 model:
-  # PWV + gated fusion ON (vs ab1-new which had pwv_enabled=false)
   pwv_enabled: true
   pwv_concat_only: false
-  era5_enabled: false        # keep ERA5 off for clean ab2-vs-ab1 comparison
+  era5_enabled: false
   mfd_channel_enabled: false
-  gated_fusion: true         # ← the third Phase 7b lever, first time tested
+  gated_fusion: true
   intensity_stratified: true
   band_centers: [0.0, 0.5, 4.5, 19.0, 50.0]
+optim:
+  lr: 5.0e-5          # fine-tune from converged p7c ckpt: gentle LR
+  warmup_epochs: 1
+  max_epochs: 18
 loss:
   data:
     type: intensity
@@ -21,9 +24,13 @@ loss:
   fss:
     enabled: true
     thresholds: [1.0, 10.0, 30.0]
-    threshold_weights: [1.0, 0.1, 0.1]
+    threshold_weights: [1.0, 0.5, 0.5]
     window: 9
-    weight: 0.1
+    weight: 2.0         # moderate: structure ~ a few % -> ~15% of loss
+  spectral:
+    enabled: true
+    highpass: 1.0
+    weight: 5.0
   budget:
     enabled: false
 hardware:
@@ -31,4 +38,4 @@ hardware:
   grad_accum: 4
 data:
   batch_size: 1
-  num_workers: 2
+  num_workers: 8

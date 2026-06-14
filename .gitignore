@@ -36,13 +36,18 @@ tmp_*.py
 ckpt/eval/**/*.npz
 ckpt/eval/**/*.npy
 eval_out/
-eval/case_study_search.csv
+eval/
 
 # Logs / temp
 *.log
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
+logs/
+
+# Legacy figure directories (paper figures now live under ckpt/figures/paper_*)
+figures/event_test_p7c/
+figures/mechanism/
 
 # CDS credentials must never leak
 .cdsapirc
@@ -57,3 +62,11 @@ __pycache__/
 *.rar
 *.zip
 *.tar.gz
+
+# Backup / scratch files (should not enter history)
+*.bak
+*.bak.*
+*.bak.csv
+
+# Debug configs (smoke/sanity only, not used for paper results)
+configs/debug_*

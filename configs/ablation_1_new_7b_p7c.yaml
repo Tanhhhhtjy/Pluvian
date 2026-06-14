@@ -30,4 +30,4 @@ hardware:
   grad_accum: 4
 data:
   batch_size: 1
-  num_workers: 8
+  num_workers: 2

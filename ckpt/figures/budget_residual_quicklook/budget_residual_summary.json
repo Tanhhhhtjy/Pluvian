@@ -1,0 +1,86 @@
+[
+  {
+    "model": "ab2",
+    "split": "event_test",
+    "n_windows": 2,
+    "n_days": 1,
+    "abs_residual_mean": 0.002763,
+    "residual_rmse": 0.003901,
+    "abs_residual_p95": 0.008519,
+    "loss_mean": 0.002713,
+    "rain_rate_mean": 9.606112,
+    "dpwv_abs_mean": 7.7e-05,
+    "div_abs_mean": 0.000387,
+    "precip_abs_mean": 0.002668,
+    "bin_abs_mean": {
+      "0-1": 0.000368,
+      "1-5": 0.000928,
+      "5-10": 0.002206,
+      "10-30": 0.004997,
+      ">=30": 0.009262
+    }
+  },
+  {
+    "model": "ab2",
+    "split": "test_robust",
+    "n_windows": 2,
+    "n_days": 1,
+    "abs_residual_mean": 0.000867,
+    "residual_rmse": 0.001551,
+    "abs_residual_p95": 0.003653,
+    "loss_mean": 0.00082,
+    "rain_rate_mean": 2.431763,
+    "dpwv_abs_mean": 6.8e-05,
+    "div_abs_mean": 0.000375,
+    "precip_abs_mean": 0.000675,
+    "bin_abs_mean": {
+      "0-1": 0.000325,
+      "1-5": 0.000708,
+      "5-10": 0.002199,
+      "10-30": 0.004222,
+      ">=30": 0.009551
+    }
+  },
+  {
+    "model": "ab3",
+    "split": "event_test",
+    "n_windows": 2,
+    "n_days": 1,
+    "abs_residual_mean": 0.002594,
+    "residual_rmse": 0.00379,
+    "abs_residual_p95": 0.008502,
+    "loss_mean": 0.002544,
+    "rain_rate_mean": 8.978138,
+    "dpwv_abs_mean": 7.2e-05,
+    "div_abs_mean": 0.000387,
+    "precip_abs_mean": 0.002494,
+    "bin_abs_mean": {
+      "0-1": 0.000354,
+      "1-5": 0.000918,
+      "5-10": 0.002124,
+      "10-30": 0.005009,
+      ">=30": 0.00925
+    }
+  },
+  {
+    "model": "ab3",
+    "split": "test_robust",
+    "n_windows": 2,
+    "n_days": 1,
+    "abs_residual_mean": 0.000814,
+    "residual_rmse": 0.001508,
+    "abs_residual_p95": 0.003596,
+    "loss_mean": 0.000767,
+    "rain_rate_mean": 2.132823,
+    "dpwv_abs_mean": 5.9e-05,
+    "div_abs_mean": 0.000375,
+    "precip_abs_mean": 0.000593,
+    "bin_abs_mean": {
+      "0-1": 0.00033,
+      "1-5": 0.000783,
+      "5-10": 0.002186,
+      "10-30": 0.004474,
+      ">=30": 0.009548
+    }
+  }
+]
