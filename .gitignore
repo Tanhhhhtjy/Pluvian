@@ -8,6 +8,36 @@ era5/
 # Derived heavy products — regenerable
 derived/
 
+# Model checkpoints (huge, regenerable) — never commit
+# Keep only the lightweight artifacts inside ckpt/ that are needed to reproduce
+# tables/figures: metric JSONs, bootstrap CIs, paper figures, route summaries.
+ckpt/**/*.pt
+ckpt/**/*.pth
+ckpt/**/*.ckpt
+ckpt/**/optimizer_state.pkl
+ckpt/**/scaler_state.pkl
+
+# Debug / smoke / experimental ckpt dirs (no paper-worthy products inside)
+ckpt/debug_*/
+ckpt/*_smoke/
+ckpt/gan_*/
+ckpt/diff_*/
+ckpt/latent_head_*/
+ckpt/budget_residual/
+ckpt/ablation_4_*/
+
+# Archived / scratch
+archive_short10ep/
+tmp_*/
+tmp_*.py
+*.tmp.json
+
+# Eval scratch (keep only ckpt/eval/*/metric.json, exclude raw arrays)
+ckpt/eval/**/*.npz
+ckpt/eval/**/*.npy
+eval_out/
+eval/case_study_search.csv
+
 # Logs / temp
 *.log
 __pycache__/
