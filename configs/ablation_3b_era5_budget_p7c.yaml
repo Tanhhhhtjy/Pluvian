@@ -1,12 +1,13 @@
-name: ablation_2_new_7b
+name: ablation_3b_era5_budget_p7c
 inherits: _base.yaml
 model:
-  # PWV + gated fusion ON (vs ab1-new which had pwv_enabled=false)
+  # Clean Track C single-delta run: ab3 ERA5 context + water-budget loss.
+  # Keep MFD off so any change from ab3 is attributable to the PDE constraint.
   pwv_enabled: true
   pwv_concat_only: false
-  era5_enabled: false        # keep ERA5 off for clean ab2-vs-ab1 comparison
+  era5_enabled: true
   mfd_channel_enabled: false
-  gated_fusion: true         # ← the third Phase 7b lever, first time tested
+  gated_fusion: true
   intensity_stratified: true
   band_centers: [0.0, 0.5, 4.5, 19.0, 50.0]
 loss:
@@ -25,10 +26,15 @@ loss:
     window: 9
     weight: 0.1
   budget:
-    enabled: false
+    enabled: true
+    weight: 0.1
+    delta_p_pa: 30000.0
+    smooth_sigma: 2.0
+    huber_delta: 1.0e-4
+    level_idx: 1
 hardware:
   precision: bf16
   grad_accum: 4
 data:
   batch_size: 1
-  num_workers: 2
+  num_workers: 8

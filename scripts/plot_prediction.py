@@ -49,7 +49,7 @@ def rain_to_dbz(rain_mmh):
     return 10.0 * np.log10(Z)
 
 
-def main(ckpt_path: str, out_path: str, start_time: str = "2023-07-29T02:00:00"):
+def main(ckpt_path: str, out_path: str, start_time: str = "2023-07-29T02:00:00", model_label: str = "ab1 (radar only)"):
     print(f"=== Plot prediction for {start_time} ===")
     print(f"  ckpt: {ckpt_path}")
 
@@ -201,7 +201,7 @@ def main(ckpt_path: str, out_path: str, start_time: str = "2023-07-29T02:00:00")
     fig.colorbar(im2, cax=cbar_ax2, label="diff (dBZ)")
 
     fig.suptitle(
-        f"Pluvian ab1 (radar only) — 23·7 case start={start_time}",
+        f"Pluvian {model_label} — 23·7 case start={start_time}",
         y=1.0, fontsize=13,
     )
     plt.tight_layout(rect=[0, 0, 0.90, 0.97])

@@ -135,6 +135,44 @@ class FSSProxy(nn.Module):
         return 1.0 - fss  # loss: smaller is better
 
 
+class SpectralLoss(nn.Module):
+    """Power-spectrum matching loss to fight MSE-induced blur.
+
+    A pixel-wise MSE/regression objective is minimised by predicting the
+    conditional mean, which is smooth: it discards the high-frequency energy
+    that makes a radar field look sharp. This loss compares the 2-D power
+    spectra of prediction and target (per frame) in log space, so the model is
+    rewarded for restoring the missing high-wavenumber energy.
+
+    Inputs are (B, T, H, W); the FFT is taken over (H, W) for each (B*T) frame.
+    ``highpass`` (>0) multiplies the per-frequency error by ``|k|**highpass`` to
+    emphasise small scales. Returns a scalar; lower is better.
+    """
+
+    def __init__(self, highpass: float = 1.0, eps: float = 1e-6):
+        super().__init__()
+        self.highpass = float(highpass)
+        self.eps = float(eps)
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        if pred.dim() != 4:
+            raise ValueError(f"expected (B,T,H,W), got {pred.shape}")
+        B, T, H, W = pred.shape
+        p = pred.reshape(B * T, H, W).float()
+        t = target.reshape(B * T, H, W).float()
+        Pp = torch.abs(torch.fft.rfft2(p, norm="ortho"))
+        Pt = torch.abs(torch.fft.rfft2(t, norm="ortho"))
+        err = (torch.log1p(Pp) - torch.log1p(Pt)) ** 2  # (B*T, H, W//2+1)
+        if self.highpass > 0:
+            ky = torch.fft.fftfreq(H, device=pred.device).abs()
+            kx = torch.fft.rfftfreq(W, device=pred.device).abs()
+            kmag = torch.sqrt(ky[:, None] ** 2 + kx[None, :] ** 2)
+            w = kmag ** self.highpass
+            w = w / w.mean().clamp(min=self.eps)
+            err = err * w[None]
+        return err.mean()
+
+
 class FocalRainLoss(nn.Module):
     """Focal loss for rain/no-rain classification (uses a soft threshold).
 

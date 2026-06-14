@@ -1,4 +1,4 @@
-name: ablation_2_new_7b
+name: ablation_2_p7d
 inherits: _base.yaml
 model:
   # PWV + gated fusion ON (vs ab1-new which had pwv_enabled=false)
@@ -31,4 +31,4 @@ hardware:
   grad_accum: 4
 data:
   batch_size: 1
-  num_workers: 2
+  num_workers: 8

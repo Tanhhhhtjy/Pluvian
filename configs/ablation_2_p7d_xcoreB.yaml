@@ -1,14 +1,17 @@
-name: ablation_2_new_7b
+name: ablation_2_p7d_xcoreB
 inherits: _base.yaml
 model:
-  # PWV + gated fusion ON (vs ab1-new which had pwv_enabled=false)
   pwv_enabled: true
   pwv_concat_only: false
-  era5_enabled: false        # keep ERA5 off for clean ab2-vs-ab1 comparison
+  era5_enabled: false
   mfd_channel_enabled: false
-  gated_fusion: true         # ← the third Phase 7b lever, first time tested
+  gated_fusion: true
   intensity_stratified: true
   band_centers: [0.0, 0.5, 4.5, 19.0, 50.0]
+optim:
+  lr: 5.0e-5
+  warmup_epochs: 1
+  max_epochs: 15
 loss:
   data:
     type: intensity
@@ -17,13 +20,13 @@ loss:
     ce_weight: 1.0
     reg_weight: 1.0
     band_edges: [0.1, 1.0, 8.0, 30.0]
-    band_sample_weights: [0.1, 1.0, 2.0, 4.0, 8.0]
+    band_sample_weights: [0.1, 1.0, 2.0, 6.0, 20.0]   # aggressive extreme-core up-weight
   fss:
     enabled: true
     thresholds: [1.0, 10.0, 30.0]
-    threshold_weights: [1.0, 0.1, 0.1]
+    threshold_weights: [1.0, 1.0, 1.0]                # full 30mm structure weight
     window: 9
-    weight: 0.1
+    weight: 0.25
   budget:
     enabled: false
 hardware:
@@ -31,4 +34,4 @@ hardware:
   grad_accum: 4
 data:
   batch_size: 1
-  num_workers: 2
+  num_workers: 8

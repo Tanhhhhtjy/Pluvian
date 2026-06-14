@@ -66,6 +66,7 @@ class Pluvian(nn.Module):
         size: str | None = None,
         intensity_stratified: bool = False,
         band_centers: tuple = (0.0, 0.5, 4.5, 19.0, 50.0),
+        cdu_decoder: bool = False,
     ):
         super().__init__()
         if size is not None:
@@ -122,7 +123,9 @@ class Pluvian(nn.Module):
             dim=hidden_dim, forecast_frames=forecast_frames,
             input_frames=input_frames, upsample_factor=8,
             dropout=decoder_dropout,
+            skip0_channels=self.radar_encoder.stem0_channels,
             intensity_stratified=intensity_stratified,
+            cdu_decoder=cdu_decoder,
             band_centers=band_centers,
         )
         self.intensity_stratified = bool(intensity_stratified)

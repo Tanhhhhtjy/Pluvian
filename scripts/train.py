@@ -34,7 +34,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from model import Pluvian
 from model.losses import (
     WeightedMSE, BMAE, FSSProxy, WaterBudgetLoss,
-    FocalRainLoss, TweedieDevianceLoss,
+    FocalRainLoss, TweedieDevianceLoss, SpectralLoss,
 )
 from pipeline.data_loader import NPJDataset
 from pipeline.utils import RADAR_LAT, RADAR_LON
@@ -257,7 +257,12 @@ def build_losses(cfg: dict) -> dict:
             smooth_sigma=cfg["loss"]["budget"]["smooth_sigma"],
             huber_delta=cfg["loss"]["budget"]["huber_delta"],
         )
-    return {"data": data_loss, "fss": fss_list, "budget": budget}
+    spectral = None
+    spec_cfg = cfg["loss"].get("spectral", {})
+    if spec_cfg.get("enabled", False):
+        spectral = (SpectralLoss(highpass=float(spec_cfg.get("highpass", 1.0))),
+                    float(spec_cfg.get("weight", 0.0)))
+    return {"data": data_loss, "fss": fss_list, "budget": budget, "spectral": spectral}
 
 
 def _intensity_loss(rain_logits: torch.Tensor, rain_pred: torch.Tensor,
@@ -441,6 +446,102 @@ class CkptManager:
         self.records = keep
 
 
+def _budget_loss_inputs(batch: dict, pwv_pred: torch.Tensor,
+                        rain_pred: torch.Tensor, era5_fut: dict,
+                        level_idx: int) -> dict[str, torch.Tensor]:
+    """Align model predictions to the ERA5/radar overlap grid.
+
+    The deterministic head predicts precipitation rate in mm/h. The
+    water-budget residual divides that rate by 3600 internally, so the rain
+    branch must only be spatially resampled here, not converted as dBZ.
+    """
+    u = era5_fut["u"][:, :, level_idx].float()
+    v = era5_fut["v"][:, :, level_idx].float()
+    q = era5_fut["q"][:, :, level_idx].float()
+
+    if pwv_pred.dim() != 4 or rain_pred.dim() != 4:
+        raise ValueError("budget loss expects pwv/rain tensors shaped (B,T,H,W)")
+
+    era5_lat = batch["era5_lat"].float()
+    era5_lon = batch["era5_lon"].float()
+    if era5_lat.dim() == 2:
+        if era5_lat.shape[0] > 1 and not torch.allclose(
+                era5_lat, era5_lat[:1].expand_as(era5_lat)):
+            raise ValueError("mixed ERA5 latitude grids within one batch")
+        era5_lat = era5_lat[0]
+    if era5_lon.dim() == 2:
+        if era5_lon.shape[0] > 1 and not torch.allclose(
+                era5_lon, era5_lon[:1].expand_as(era5_lon)):
+            raise ValueError("mixed ERA5 longitude grids within one batch")
+        era5_lon = era5_lon[0]
+    if era5_lat.numel() != u.shape[-2] or era5_lon.numel() != u.shape[-1]:
+        raise ValueError(
+            f"ERA5 grid shape {era5_lat.numel()}x{era5_lon.numel()} "
+            f"does not match fields {u.shape[-2:]}"
+        )
+
+    radar_lat = torch.as_tensor(RADAR_LAT, dtype=era5_lat.dtype, device=era5_lat.device)
+    radar_lon = torch.as_tensor(RADAR_LON, dtype=era5_lon.dtype, device=era5_lon.device)
+    lat_lo = torch.minimum(radar_lat[0], radar_lat[-1])
+    lat_hi = torch.maximum(radar_lat[0], radar_lat[-1])
+    lon_lo = torch.minimum(radar_lon[0], radar_lon[-1])
+    lon_hi = torch.maximum(radar_lon[0], radar_lon[-1])
+    lat_mask = (era5_lat >= lat_lo) & (era5_lat <= lat_hi)
+    lon_mask = (era5_lon >= lon_lo) & (era5_lon <= lon_hi)
+    if int(lat_mask.sum().item()) < 2 or int(lon_mask.sum().item()) < 2:
+        raise ValueError("ERA5 grid has fewer than two cells inside the radar domain")
+
+    era5_lat = era5_lat[lat_mask]
+    era5_lon = era5_lon[lon_mask]
+    u_budget = u[:, :, lat_mask, :][:, :, :, lon_mask]
+    v_budget = v[:, :, lat_mask, :][:, :, :, lon_mask]
+    q_budget = q[:, :, lat_mask, :][:, :, :, lon_mask]
+
+    if era5_lat[-1] <= era5_lat[0]:
+        era5_lat = torch.flip(era5_lat, dims=[0])
+        u_budget = torch.flip(u_budget, dims=[-2])
+        v_budget = torch.flip(v_budget, dims=[-2])
+        q_budget = torch.flip(q_budget, dims=[-2])
+    if era5_lon[-1] <= era5_lon[0]:
+        era5_lon = torch.flip(era5_lon, dims=[0])
+        u_budget = torch.flip(u_budget, dims=[-1])
+        v_budget = torch.flip(v_budget, dims=[-1])
+        q_budget = torch.flip(q_budget, dims=[-1])
+
+    pwv_budget = _sample_radar_grid_to_latlon(pwv_pred.float(), era5_lat, era5_lon)
+    rain_budget = _sample_radar_grid_to_latlon(rain_pred.float(), era5_lat, era5_lon)
+
+    return {
+        "pwv_budget": pwv_budget,
+        "rain_budget": rain_budget,
+        "u_budget": u_budget,
+        "v_budget": v_budget,
+        "q_budget": q_budget,
+        "lat_budget": era5_lat,
+        "lon_budget": era5_lon,
+    }
+
+
+def _sample_radar_grid_to_latlon(field: torch.Tensor,
+                                 lat: torch.Tensor,
+                                 lon: torch.Tensor) -> torch.Tensor:
+    if field.dim() != 4:
+        raise ValueError(f"expected (B,T,H,W), got {field.shape}")
+    B, T, H, W = field.shape
+    radar_lat = torch.as_tensor(RADAR_LAT, dtype=field.dtype, device=field.device)
+    radar_lon = torch.as_tensor(RADAR_LON, dtype=field.dtype, device=field.device)
+    lat = lat.to(device=field.device, dtype=field.dtype)
+    lon = lon.to(device=field.device, dtype=field.dtype)
+    y = 2.0 * (lat - radar_lat[0]) / (radar_lat[-1] - radar_lat[0]) - 1.0
+    x = 2.0 * (lon - radar_lon[0]) / (radar_lon[-1] - radar_lon[0]) - 1.0
+    yy, xx = torch.meshgrid(y, x, indexing="ij")
+    grid = torch.stack((xx, yy), dim=-1).unsqueeze(0).expand(B * T, -1, -1, -1)
+    sampled = F.grid_sample(
+        field.reshape(B * T, 1, H, W), grid,
+        mode="bilinear", padding_mode="border", align_corners=True,
+    )
+    return sampled.reshape(B, T, lat.numel(), lon.numel())
+
 # ---------------------------------------------------------------------------
 # train + val loops
 # ---------------------------------------------------------------------------
@@ -459,12 +560,9 @@ def train_one_epoch(model, loader, opt, losses, cfg, device, dtype, epoch,
     budget_cfg = cfg["loss"]["budget"]
     intensity_on = bool(cfg["model"].get("intensity_stratified", False))
 
-    lat_t = torch.from_numpy(np.asarray(RADAR_LAT, dtype=np.float32)).to(device)
-    lon_t = torch.from_numpy(np.asarray(RADAR_LON, dtype=np.float32)).to(device)
-
     opt.zero_grad(set_to_none=True)
     t0 = time.time()
-    running = {"data": 0.0, "fss": 0.0, "budget": 0.0, "total": 0.0, "n": 0}
+    running = {"data": 0.0, "fss": 0.0, "budget": 0.0, "spec": 0.0, "total": 0.0, "n": 0}
 
     for it, batch in enumerate(loader):
         batch = _to_device(batch, device)
@@ -503,17 +601,29 @@ def train_one_epoch(model, loader, opt, losses, cfg, device, dtype, epoch,
                 loss_total = loss_total + loss_fss_v
             loss_budget_v = torch.zeros((), device=device)
             if losses["budget"] is not None:
-                lvl = budget_cfg["level_idx"]
-                u = era5_fut["u"][:, :, lvl]
-                v = era5_fut["v"][:, :, lvl]
-                q = era5_fut["q"][:, :, lvl]
+                budget_inputs = _budget_loss_inputs(
+                    batch, pwv_pred, rain_pred, era5_fut,
+                    budget_cfg["level_idx"])
+                pwv_budget = budget_inputs["pwv_budget"]
+                rain_budget = budget_inputs["rain_budget"]
+                u_budget = budget_inputs["u_budget"]
+                v_budget = budget_inputs["v_budget"]
+                q_budget = budget_inputs["q_budget"]
+                lat_budget = budget_inputs["lat_budget"]
+                lon_budget = budget_inputs["lon_budget"]
                 out_budget = losses["budget"](
-                    pwv_pred=pwv_pred, rain_pred=rain_pred,
-                    u_era5=u, v_era5=v, q_era5=q,
-                    lat=lat_t, lon=lon_t,
+                    pwv_pred=pwv_budget, rain_pred=rain_budget,
+                    u_era5=u_budget, v_era5=v_budget, q_era5=q_budget,
+                    lat=lat_budget, lon=lon_budget,
                 )
                 loss_budget_v = out_budget["loss"] * budget_cfg["weight"]
                 loss_total = loss_total + loss_budget_v
+
+            loss_spec_v = torch.zeros((), device=device)
+            if losses.get("spectral") is not None:
+                spec_mod, spec_w = losses["spectral"]
+                loss_spec_v = spec_mod(rain_pred, rain_tgt) * spec_w
+                loss_total = loss_total + loss_spec_v
 
         loss_scaled = loss_total / grad_accum
         loss_scaled.backward()
@@ -537,6 +647,7 @@ def train_one_epoch(model, loader, opt, losses, cfg, device, dtype, epoch,
         running["data"] += loss_data.item() * bs
         running["fss"] += loss_fss_v.item() * bs
         running["budget"] += loss_budget_v.item() * bs
+        running["spec"] += loss_spec_v.item() * bs
         running["total"] += loss_total.item() * bs
         running["n"] += bs
 
@@ -546,6 +657,7 @@ def train_one_epoch(model, loader, opt, losses, cfg, device, dtype, epoch,
                    f"data={loss_data.item():.4f} "
                    f"fss={loss_fss_v.item():.4f} "
                    f"bud={loss_budget_v.item():.4f} "
+                   f"spec={loss_spec_v.item():.4f} "
                    f"tot={loss_total.item():.4f} "
                    f"lr={cur_lr:.2e} "
                    f"step={global_step}")
@@ -554,6 +666,7 @@ def train_one_epoch(model, loader, opt, losses, cfg, device, dtype, epoch,
                 writer.add_scalar("train/data", loss_data.item(), global_step)
                 writer.add_scalar("train/fss", loss_fss_v.item(), global_step)
                 writer.add_scalar("train/budget", loss_budget_v.item(), global_step)
+                writer.add_scalar("train/spec", loss_spec_v.item(), global_step)
                 writer.add_scalar("train/total", loss_total.item(), global_step)
                 writer.add_scalar("train/lr", cur_lr, global_step)
 
@@ -564,6 +677,7 @@ def train_one_epoch(model, loader, opt, losses, cfg, device, dtype, epoch,
     n = max(1, running["n"])
     print(f"[ep{epoch:03d}] avg data={running['data']/n:.4f} "
           f"fss={running['fss']/n:.4f} budget={running['budget']/n:.4f} "
+          f"spec={running['spec']/n:.4f} "
           f"total={running['total']/n:.4f}  ({time.time()-t0:.1f}s)")
     return global_step
 
@@ -593,8 +707,6 @@ def validate(model, loader, losses, cfg, device, dtype, epoch, writer, debug: bo
     n_crps = int(cfg["loss"].get("crps_samples", 4))
     intensity_on = bool(cfg["model"].get("intensity_stratified", False))
 
-    lat_t = torch.from_numpy(np.asarray(RADAR_LAT, dtype=np.float32)).to(device)
-    lon_t = torch.from_numpy(np.asarray(RADAR_LON, dtype=np.float32)).to(device)
     budget_cfg = cfg["loss"]["budget"]
 
     for it, batch in enumerate(loader):
@@ -669,13 +781,20 @@ def validate(model, loader, losses, cfg, device, dtype, epoch, writer, debug: bo
             agg["spread"].append(0.0)
 
         if losses["budget"] is not None:
-            lvl = budget_cfg["level_idx"]
-            u = era5_fut["u"][:, :, lvl]
-            v = era5_fut["v"][:, :, lvl]
-            q = era5_fut["q"][:, :, lvl]
+            budget_inputs = _budget_loss_inputs(
+                batch, pwv_pred, rain_pred, era5_fut,
+                budget_cfg["level_idx"])
+            pwv_budget = budget_inputs["pwv_budget"]
+            rain_budget = budget_inputs["rain_budget"]
+            u_budget = budget_inputs["u_budget"]
+            v_budget = budget_inputs["v_budget"]
+            q_budget = budget_inputs["q_budget"]
+            lat_budget = budget_inputs["lat_budget"]
+            lon_budget = budget_inputs["lon_budget"]
             ob = losses["budget"](
-                pwv_pred=pwv_pred, rain_pred=rain_pred,
-                u_era5=u, v_era5=v, q_era5=q, lat=lat_t, lon=lon_t,
+                pwv_pred=pwv_budget, rain_pred=rain_budget,
+                u_era5=u_budget, v_era5=v_budget, q_era5=q_budget,
+                lat=lat_budget, lon=lon_budget,
             )
             agg["budget"].append(ob["loss"].item())
 
@@ -726,6 +845,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True, type=Path)
     ap.add_argument("--resume", type=Path, default=None)
+    ap.add_argument("--init-from", type=Path, default=None,
+                    help="load model weights only (fresh optimizer, epoch 0, "
+                         "fresh LR schedule) for fine-tuning with a new loss")
     ap.add_argument("--debug", action="store_true",
                     help="run 5 batches/epoch and exit after 1 epoch")
     ap.add_argument("--max-epochs", type=int, default=None,
@@ -778,6 +900,7 @@ def main():
         intensity_stratified=bool(m.get("intensity_stratified", False)),
         band_centers=tuple(m.get("band_centers", (0.0, 0.5, 4.5, 19.0, 50.0))),
         gated_fusion=bool(m.get("gated_fusion", False)),
+        cdu_decoder=bool(m.get("cdu_decoder", False)),
     ).to(device)
     print(f"[model] params: {model.num_parameters()/1e6:.2f}M")
 
@@ -793,12 +916,20 @@ def main():
         if k == "fss":
             for fss_mod, _w in v:
                 fss_mod.to(device)
+        elif k == "spectral":
+            v[0].to(device)
         else:
             v.to(device)
 
     # ---- resume ----
     start_epoch = 0
     global_step = 0
+    if args.init_from is not None and args.init_from.exists():
+        state = torch.load(args.init_from, map_location=device)
+        result = model.load_state_dict(state["model"], strict=False)
+        print(f"[init-from] loaded weights from {args.init_from} "
+              f"({len(result.missing_keys)} missing, "
+              f"{len(result.unexpected_keys)} unexpected); fresh opt + LR schedule")
     if args.resume is not None and args.resume.exists():
         state = torch.load(args.resume, map_location=device)
         # Phase 7b audit M2: legacy ab1/2/3 ckpts predate U-Net skip + lead-time

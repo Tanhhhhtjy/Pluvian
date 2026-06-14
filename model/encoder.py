@@ -164,10 +164,12 @@ class RadarEncoder(nn.Module):
                  n_heads: int = 8, window: int = 8,
                  n_spatial_blocks: int = 2, n_temporal_blocks: int = 1):
         super().__init__()
-        self.stem = nn.Sequential(
-            _ConvBlock(in_channels, dim // 2, stride=4, kernel=7),
-            _ConvBlock(dim // 2, dim, stride=1),
-        )
+        # Split the stride-4 patch stem into two stride-2 stages so an H/2
+        # feature map is exposed for a native-resolution decoder skip.
+        # stem0: H -> H/2 (dim//2 channels);  stem1: H/2 -> H/4 (dim channels).
+        self.stem0 = _ConvBlock(in_channels, dim // 2, stride=2, kernel=7)
+        self.stem1 = _ConvBlock(dim // 2, dim, stride=2, kernel=3)
+        self.stem0_channels = dim // 2
         self.spatial1 = nn.ModuleList(
             [_SpatialBlock(dim, n_heads, window) for _ in range(n_spatial_blocks)]
         )
@@ -184,7 +186,10 @@ class RadarEncoder(nn.Module):
         # radar: (B, T, H, W)
         B, T, H, W = radar.shape
         x = rearrange(radar, "b t h w -> (b t) () h w")
-        x = self.stem(x)                                    # (B*T, C, H/4, W/4)
+        x = self.stem0(x)                                   # (B*T, C/2, H/2, W/2)
+        # stage0 skip: post-stem0 at H/2 (finest encoder feature)
+        skip_stage0 = rearrange(x, "(b t) c h w -> b t c h w", b=B, t=T)
+        x = self.stem1(x)                                   # (B*T, C, H/4, W/4)
         x = rearrange(x, "n c h w -> n h w c")
         for blk in self.spatial1:
             x = blk(x)
@@ -204,7 +209,8 @@ class RadarEncoder(nn.Module):
             x = blk(x)
         x = rearrange(x, "(b h w) t c -> b t c h w", b=B, h=h2, w=w2)
         if return_skips:
-            return x, {"stage1": skip_stage1, "stage2": skip_stage2}
+            return x, {"stage0": skip_stage0, "stage1": skip_stage1,
+                       "stage2": skip_stage2}
         return x
 
 

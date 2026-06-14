@@ -135,9 +135,49 @@ def load_era5_window(start_time, n_frames: int, frame_minutes: int = 6):
     return _load_era5_cached(pd.Timestamp(start_time).value, n_frames, frame_minutes)
 
 
+def load_era5_window_with_grid(start_time, n_frames: int, frame_minutes: int = 6):
+    """Return ERA5 cubes plus their native latitude/longitude grid.
+
+    The model encoder consumes ERA5 on the native 0.25-degree grid. Physics
+    losses need the matching 1-D coordinates rather than the radar grid.
+    """
+    start_ns = pd.Timestamp(start_time).value
+    data = _load_era5_cached(start_ns, n_frames, frame_minutes)
+    lat, lon = _load_era5_grid_cached(start_ns, n_frames, frame_minutes)
+    return data, lat, lon
+
+
 @lru_cache(maxsize=8)
 def _load_era5_cached(start_ns: int, n_frames: int, frame_minutes: int):
     return _load_era5_impl(pd.Timestamp(start_ns), n_frames, frame_minutes)
+
+
+@lru_cache(maxsize=8)
+def _load_era5_grid_cached(start_ns: int, n_frames: int, frame_minutes: int):
+    start = pd.Timestamp(start_ns)
+    target_times = pd.date_range(start, periods=n_frames,
+                                 freq=f"{frame_minutes}min")
+    months = sorted({(t.year, t.month) for t in [start - pd.Timedelta(hours=2),
+                                                  target_times[-1] + pd.Timedelta(hours=2)]})
+    for var in VARS:
+        for lvl in LEVELS:
+            for (y, m) in months:
+                if not _file(var, lvl, y, m).exists():
+                    continue
+                loaded = _load_monthly(var, lvl, y, m)
+                if loaded is None:
+                    continue
+                _, src_lat, src_lon, _ = loaded
+                return src_lat.astype(np.float32), src_lon.astype(np.float32)
+
+    # All requested fields are missing. Match the zero-cube shape emitted by
+    # _load_era5_impl so downstream shape checks still fail loudly only on real
+    # inconsistencies, not missing-data fallback plumbing.
+    sample = next(iter(_load_era5_cached(start_ns, n_frames, frame_minutes).values()))
+    H, W = sample.shape[-2:]
+    lo, hi, la_lo, la_hi = SUBSET_BOX
+    return (np.linspace(la_lo, la_hi, H, dtype=np.float32),
+            np.linspace(lo, hi, W, dtype=np.float32))
 
 
 def _load_era5_impl(start, n_frames, frame_minutes):

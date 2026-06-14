@@ -1,12 +1,13 @@
-name: ablation_2_new_7b
+name: ablation_3_era5_p7c
 inherits: _base.yaml
 model:
-  # PWV + gated fusion ON (vs ab1-new which had pwv_enabled=false)
+  # ab3 = ab2 (radar+PWV+gated fusion) + ERA5 reanalysis context.
+  # Single delta vs ablation_2_new_7b_p7c is era5_enabled: true.
   pwv_enabled: true
   pwv_concat_only: false
-  era5_enabled: false        # keep ERA5 off for clean ab2-vs-ab1 comparison
+  era5_enabled: true
   mfd_channel_enabled: false
-  gated_fusion: true         # ← the third Phase 7b lever, first time tested
+  gated_fusion: true
   intensity_stratified: true
   band_centers: [0.0, 0.5, 4.5, 19.0, 50.0]
 loss:
@@ -31,4 +32,4 @@ hardware:
   grad_accum: 4
 data:
   batch_size: 1
-  num_workers: 2
+  num_workers: 8

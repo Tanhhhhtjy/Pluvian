@@ -38,7 +38,7 @@ from scripts.train import (  # type: ignore  # noqa: E402
 
 
 def _load_ckpt(path: Path, device: torch.device):
-    state = torch.load(path, map_location=device)
+    state = torch.load(path, map_location=device, weights_only=False)
     cfg = state["config"]
     m = cfg["model"]
     model = Pluvian(
@@ -55,6 +55,10 @@ def _load_ckpt(path: Path, device: torch.device):
         n_era5_vars=m["n_era5_vars"],
         n_era5_levels=m["n_era5_levels"],
         mfd_channels=m["mfd_channels"],
+        intensity_stratified=bool(m.get("intensity_stratified", False)),
+        band_centers=tuple(m.get("band_centers", (0.0, 0.5, 4.5, 19.0, 50.0))),
+        gated_fusion=bool(m.get("gated_fusion", False)),
+        cdu_decoder=bool(m.get("cdu_decoder", False)),
     ).to(device)
     model.load_state_dict(state["model"])
     model.eval()
@@ -109,9 +113,12 @@ def main():
     manifest = REPO_ROOT / cfg["data"]["manifest"]
     starts = _starts_for_splits(manifest, splits)
     drop_pwv = args.drop_pwv or cfg["data"]["drop_pwv_val"]
+    load_mfd = bool(cfg["model"].get("mfd_channel_enabled", False))
+    load_era5 = bool(cfg["model"].get("era5_enabled", True)) or load_mfd
     ds = NPJDataset(
         manifest=manifest, window_minutes=cfg["data"]["window_minutes"],
         starts=starts, drop_pwv=drop_pwv,
+        load_mfd=load_mfd, load_era5=load_era5,
     )
     print(f"[eval] split={splits} windows={len(ds)} drop_pwv={drop_pwv}")
 

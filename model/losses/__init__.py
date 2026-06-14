@@ -10,6 +10,7 @@ from .data_losses import (
     BMAE,
     FSSProxy,
     FocalRainLoss,
+    SpectralLoss,
 )
 from .tweedie import TweedieDevianceLoss
 
@@ -22,5 +23,6 @@ __all__ = [
     "BMAE",
     "FSSProxy",
     "FocalRainLoss",
+    "SpectralLoss",
     "TweedieDevianceLoss",
 ]

@@ -105,7 +105,8 @@ class NPJDataset(Dataset):
 
         # ERA5 (optional — skip when model doesn't use it to save DataLoader time)
         if self.load_era5:
-            era5 = era5_io.load_era5_window(start, self.n_frames)
+            era5, era5_lat, era5_lon = era5_io.load_era5_window_with_grid(
+                start, self.n_frames)
             era5_t = {k: self._to_tensor(v) for k, v in era5.items()}
         else:
             # Provide tiny zero tensors with right keys/shape signature so the
@@ -113,6 +114,8 @@ class NPJDataset(Dataset):
             import numpy as np
             zero = np.zeros((self.n_frames, 8, 4, 4), dtype=np.float32)
             era5_t = {k: self._to_tensor(zero) for k in ("u", "v", "q", "t")}
+            era5_lat = np.linspace(35.5, 43.1, 4, dtype=np.float32)
+            era5_lon = np.linspace(112.5, 120.5, 4, dtype=np.float32)
 
         sample = {
             "radar": self._to_tensor(radar),
@@ -124,6 +127,8 @@ class NPJDataset(Dataset):
             "station_mask": self._to_tensor(sta_mask),
             "station_coords": self._to_tensor(sta_coords),
             "era5": era5_t,
+            "era5_lat": self._to_tensor(era5_lat),
+            "era5_lon": self._to_tensor(era5_lon),
             "time": str(start),
             "meta": meta,
         }

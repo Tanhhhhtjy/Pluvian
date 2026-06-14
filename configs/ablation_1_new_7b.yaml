@@ -27,7 +27,7 @@ loss:
     enabled: false
 hardware:
   precision: bf16
-  grad_accum: 2
+  grad_accum: 4
 data:
-  batch_size: 2
+  batch_size: 1
   num_workers: 2

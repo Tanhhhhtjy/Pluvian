@@ -48,6 +48,36 @@ class _UpBlock(nn.Module):
         return self.act(self.norm(self.up(x)))
 
 
+class _CDUUpBlock(nn.Module):
+    """Cubic Dual Upsampling x2 (exPreCast, ICLR 2026).
+
+    Two branches feed one fused output:
+      - low-freq branch  : bicubic interpolation x2 + 1x1 conv (smooth field)
+      - high-freq branch : PixelShuffle x2 residual (strong-convective texture)
+    They are concatenated and fused by a 3x3 conv, so the high-intensity cores
+    survive instead of being smoothed away by a single shared upsample path.
+    """
+
+    def __init__(self, in_ch: int, out_ch: int):
+        super().__init__()
+        self.low = nn.Conv2d(in_ch, out_ch, 1)
+        self.high = nn.Sequential(
+            nn.Conv2d(in_ch, out_ch * 4, 3, padding=1),
+            nn.PixelShuffle(2),
+        )
+        self.fuse = nn.Conv2d(out_ch * 2, out_ch, 3, padding=1)
+        self.norm = nn.GroupNorm(min(8, out_ch), out_ch)
+        self.act = nn.GELU()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        hi = self.high(x)
+        lo = F.interpolate(x, size=hi.shape[-2:], mode="bicubic",
+                           align_corners=False)
+        lo = self.low(lo)
+        out = self.fuse(torch.cat([lo, hi], dim=1))
+        return self.act(self.norm(out))
+
+
 class _SkipFuse(nn.Module):
     """Fuse a concatenated (main, skip) feature map via 3x3 conv + GN + GELU."""
 
@@ -110,19 +140,26 @@ class PluvianDecoder(nn.Module):
                  input_frames: int = 30, upsample_factor: int = 8,
                  dropout: float = 0.1, n_query_heads: int = 4,
                  skip_channels: int | None = None,
+                 skip0_channels: int | None = None,
                  intensity_stratified: bool = False,
+                 cdu_decoder: bool = False,
                  band_centers: Sequence[float] = (0.0, 0.5, 4.5, 19.0, 50.0)):
         super().__init__()
         self.forecast_frames = forecast_frames
         self.input_frames = input_frames
         self.dropout_p = float(dropout)
         self.dim = dim
+        self.cdu_decoder = bool(cdu_decoder)
+        up_cls = _CDUUpBlock if self.cdu_decoder else _UpBlock
         self.skip_channels = skip_channels if skip_channels is not None else dim
+        # stage0 (H/2) skip comes from the encoder stem; default dim//2 channels.
+        self.skip0_channels = skip0_channels if skip0_channels is not None else dim // 2
 
         self.lead_attn = _LeadTimeCrossAttn(dim, forecast_frames, n_query_heads)
 
         self.skip2_time = nn.Linear(input_frames, forecast_frames, bias=False)
         self.skip1_time = nn.Linear(input_frames, forecast_frames, bias=False)
+        self.skip0_time = nn.Linear(input_frames, forecast_frames, bias=False)
 
         self.skip2_proj = nn.Conv2d(self.skip_channels, dim, 1)
         ch_after_up1 = max(dim // 2, 32)
@@ -134,12 +171,24 @@ class PluvianDecoder(nn.Module):
         self.up_blocks = nn.ModuleList()
         ch = dim
         f = upsample_factor
+        up_in_chs = []
         while f > 1:
             next_ch = max(ch // 2, 32)
-            self.up_blocks.append(_UpBlock(ch, next_ch))
+            up_in_chs.append(ch)
+            self.up_blocks.append(up_cls(ch, next_ch))
             ch = next_ch
             f //= 2
         self.last_ch = ch
+
+        # stage0 (H/2) skip is fused into the input of the final up_block,
+        # bringing native-resolution radar texture to the last upsample.
+        if len(self.up_blocks) > 1:
+            ch_before_last = up_in_chs[-1]
+            self.skip0_proj = nn.Conv2d(self.skip0_channels, ch_before_last, 1)
+            self.fuse_stage0 = _SkipFuse(ch_before_last * 2, ch_before_last)
+        else:
+            self.skip0_proj = None
+            self.fuse_stage0 = None
 
         self.rain_head = nn.Conv2d(ch, 1, 1)
         self.pwv_head = nn.Conv2d(ch, 1, 1)
@@ -209,8 +258,25 @@ class PluvianDecoder(nn.Module):
             x = torch.cat([x, s1], dim=1)
             x = self.fuse_stage1(x)
 
-        for blk in self.up_blocks[1:]:
+        for blk in self.up_blocks[1:-1]:
             x = blk(x)
+
+        # skip 0 at H/2 before the final up_block (native-resolution texture)
+        if (len(self.up_blocks) > 1 and self.fuse_stage0 is not None
+                and encoder_skips is not None and "stage0" in encoder_skips):
+            s0 = self._maybe_resize_time(encoder_skips["stage0"])
+            s0 = _temporal_aggregate(s0, self.skip0_time)
+            s0 = rearrange(s0, "b t c h w -> (b t) c h w")
+            s0 = self.skip0_proj(s0)
+            if s0.shape[-2:] != x.shape[-2:]:
+                # odd input dims make the encoder stem (floor) and the
+                # PixelShuffle upsample (exact x2) differ by 1px; align here.
+                s0 = F.interpolate(s0, size=x.shape[-2:], mode="nearest")
+            x = torch.cat([x, s0], dim=1)
+            x = self.fuse_stage0(x)
+
+        if len(self.up_blocks) > 1:
+            x = self.up_blocks[-1](x)
 
         rain_out = self.rain_head(x)
         pwv = self.pwv_head(x)
