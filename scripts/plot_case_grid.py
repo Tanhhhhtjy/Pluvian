@@ -35,9 +35,30 @@ def parse_model_arg(value: str) -> tuple[str, Path]:
 
 
 def parse_diff_arg(value: str, model_names: set[str]) -> DiffSpec:
-    if "-" not in value:
+    # Prefer ' vs ' or '__minus__' as explicit separator (needed when model
+    # names themselves contain '-', e.g. ab3-cdu). Fall back to first '-' for
+    # backward compatibility.
+    if " vs " in value:
+        left, right = [p.strip() for p in value.split(" vs ", 1)]
+    elif "__minus__" in value:
+        left, right = [p.strip() for p in value.split("__minus__", 1)]
+    elif "-" in value:
+        # Greedy match: try each split position to find a valid (left, right)
+        # pair where both halves are known model names. Prefers the rightmost
+        # valid split so 'ab3-cdu-ab3' is parsed as ('ab3-cdu', 'ab3').
+        positions = [i for i, ch in enumerate(value) if ch == "-"]
+        candidates = [(value[:i].strip(), value[i+1:].strip()) for i in positions]
+        valid = [(l, r) for (l, r) in candidates
+                 if l in model_names and r in model_names]
+        if not valid:
+            raise ValueError(
+                f"diff '{value}': could not match a (LEFT, RIGHT) pair to model names "
+                f"{sorted(model_names)}; use ' vs ' or '__minus__' as separator"
+            )
+        # Prefer the split that uses the longest LEFT (matches model names with '-')
+        left, right = max(valid, key=lambda lr: len(lr[0]))
+    else:
         raise ValueError("diff arguments must use LEFT-RIGHT, e.g. ab3-ab2")
-    left, right = [part.strip() for part in value.split("-", 1)]
     missing = [name for name in (left, right) if name not in model_names]
     if missing:
         raise ValueError(f"diff references unknown model(s): {', '.join(missing)}")

@@ -104,8 +104,8 @@ mkdir -p "$(dirname "$case_out")"
     --model "ab3=${AB3_CKPT}" \
     --model "ab3b=${AB3B_CKPT}" \
     --model "ab3-cdu=${CDU_CKPT}" \
-    --diff  "ab3-cdu-ab3b" \
-    --diff  "ab3-cdu-ab3" \
+    --diff  "ab3-cdu vs ab3b" \
+    --diff  "ab3-cdu vs ab3" \
     --start "2023-07-30T09:00:00" \
     --lead 18 --lead 36 --lead 72 --lead 108 \
     --diff_range 15 \
