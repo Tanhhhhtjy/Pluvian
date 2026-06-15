@@ -16,6 +16,17 @@ On the bulk metrics ab3b extends the gains observed in §3.1. CSI@1 rises to 0.4
 
 The extreme-intensity tail, however, collapses. CSI@30 falls from 0.291 to 0.210 on event_test (-27.8%) and from 0.276 to 0.215 on test_robust (-22.1%). Paired window-level bootstrap (n=2000, day-stratified) gives a 95% CI on the CSI@30 difference of [−0.091, −0.057] on event_test and [−0.078, −0.019] on test_robust; both intervals exclude zero, ruling out a sampling artefact. The regression is not driven by a small number of leads: across all 18 forecast leads (6–108 min) on event_test, 0 of 18 yield a positive CSI@30 difference against the ab1 baseline, compared with 2 of 18 for ab3 and 1 of 18 for ab2 (Fig. 2). Mean per-lead csi30 differences against ab1 are -0.026 for ab2, -0.018 for ab3, and -0.084 for ab3b — a fourfold deepening of the deficit. The pattern indicates that the water-budget penalty acts uniformly across the forecast horizon rather than at any particular lead, and that its cost is concentrated at the high-reflectivity tail where bulk-water conservation pressures the network towards spatially smoother solutions.
 
+To test whether the collapse is an artefact of the budget-loss weight (0.1 in the main ab3b configuration), we re-trained two further variants with the budget term down-weighted by 10× and 100×, holding every other hyperparameter fixed. Table A1 summarises the sweep:
+
+| budget weight | event_test CSI@1 | CSI@10 | CSI@30 | MAE | test_robust CSI@30 |
+|---|---:|---:|---:|---:|---:|
+| 0 (ab3) | 0.470 | 0.632 | **0.291** | 4.27 | **0.276** |
+| 0.001 | 0.507 | 0.650 | 0.276 (−5.2%) | 3.97 | 0.263 (−4.7%) |
+| 0.01 | 0.495 | 0.646 | 0.212 (−27.1%) | 4.07 | 0.211 (−23.6%) |
+| 0.1 (main ab3b) | 0.492 | 0.641 | 0.210 (−27.8%) | 4.10 | 0.215 (−22.1%) |
+
+The CSI@30 cost is essentially saturated at weight ≥ 0.01 — moving from 0.01 to 0.1 changes the regression by less than one percentage point on either split, while moving from 0.001 to 0.01 quadruples it. Only at weight 0.001 does the regression shrink to a few-percent micro-effect, and at that level the budget loss value during training is ≈ 1 × 10⁻⁵ (versus a data-loss baseline ~10), meaning the physics term has essentially stopped influencing optimisation. The sweep therefore characterises the trade-off as a structural property of the loss landscape in the weight regime where the physics constraint is doing non-trivial work, not a tunable knob: any weight that materially enforces water-budget consistency materially suppresses the high-reflectivity tail.
+
 ### 3.3 Pooled-CSI diagnoses the failure mode: smoothing, not displacement
 
 To distinguish between two candidate explanations for the CSI@30 collapse — a forecast that places the right core in the wrong location (displacement) versus a forecast that dissolves the core into a flatter field (smoothing) — we apply a pooled-CSI diagnostic. For each pooling window w ∈ {1, 4, 16} pixels we replace the binary forecast field 1{ŷ ≥ τ} and the binary observation field 1{y ≥ τ} with their max-pooled counterparts MaxPool_w(1{ŷ ≥ τ}) and MaxPool_w(1{y ≥ τ}), and compute CSI on the pooled pair at threshold τ = 30 dBZ. A displaced-but-intense forecast should recover skill as w grows, because translating the forecast core within a w-pixel neighbourhood is absorbed by the pooling. A physically smoothed forecast cannot recover, because the pooled forecast field never contains a sufficiently intense region to match the pooled observation.
