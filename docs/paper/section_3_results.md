@@ -16,16 +16,16 @@ On the bulk metrics ab3b extends the gains observed in §3.1. CSI@1 rises to 0.4
 
 The extreme-intensity tail, however, collapses. CSI@30 falls from 0.291 to 0.210 on event_test (-27.8%) and from 0.276 to 0.215 on test_robust (-22.1%). Paired window-level bootstrap (n=2000, day-stratified) gives a 95% CI on the CSI@30 difference of [−0.091, −0.057] on event_test and [−0.078, −0.019] on test_robust; both intervals exclude zero, ruling out a sampling artefact. The regression is not driven by a small number of leads: across all 18 forecast leads (6–108 min) on event_test, 0 of 18 yield a positive CSI@30 difference against the ab1 baseline, compared with 2 of 18 for ab3 and 1 of 18 for ab2 (Fig. 2). Mean per-lead csi30 differences against ab1 are -0.026 for ab2, -0.018 for ab3, and -0.084 for ab3b — a fourfold deepening of the deficit. The pattern indicates that the water-budget penalty acts uniformly across the forecast horizon rather than at any particular lead, and that its cost is concentrated at the high-reflectivity tail where bulk-water conservation pressures the network towards spatially smoother solutions.
 
-To test whether the collapse is an artefact of the budget-loss weight (0.1 in the main ab3b configuration), we re-trained two further variants with the budget term down-weighted by 10× and 100×, holding every other hyperparameter fixed. Table A1 summarises the sweep:
+To test whether the collapse is an artefact of the budget-loss weight (0.1 in the main ab3b configuration), we re-trained two further variants with the budget term down-weighted by 10× and 100×, holding every other hyperparameter fixed. Table A1 summarises the sweep, with paired window-level bootstrap 95% CIs (n=2000, day-stratified) on the CSI@30 difference vs ab3:
 
-| budget weight | event_test CSI@1 | CSI@10 | CSI@30 | MAE | test_robust CSI@30 |
-|---|---:|---:|---:|---:|---:|
-| 0 (ab3) | 0.470 | 0.632 | **0.291** | 4.27 | **0.276** |
-| 0.001 | 0.507 | 0.650 | 0.276 (−5.2%) | 3.97 | 0.263 (−4.7%) |
-| 0.01 | 0.495 | 0.646 | 0.212 (−27.1%) | 4.07 | 0.211 (−23.6%) |
-| 0.1 (main ab3b) | 0.492 | 0.641 | 0.210 (−27.8%) | 4.10 | 0.215 (−22.1%) |
+| budget weight | event_test CSI@30 | paired Δ vs ab3 | test_robust CSI@30 | paired Δ vs ab3 |
+|---|---:|---|---:|---|
+| 0 (ab3) | **0.291** | — | **0.276** | — |
+| 0.001 | 0.276 | −0.015 [−0.023, +0.001] (n.s.) | 0.263 | −0.013 [−0.016, −0.004] |
+| 0.01 | 0.212 | −0.078 [−0.088, −0.055] | 0.211 | −0.065 [−0.077, −0.025] |
+| 0.1 (main ab3b) | 0.210 | −0.081 [−0.091, −0.057] | 0.215 | −0.061 [−0.078, −0.019] |
 
-The CSI@30 cost is essentially saturated at weight ≥ 0.01 — moving from 0.01 to 0.1 changes the regression by less than one percentage point on either split, while moving from 0.001 to 0.01 quadruples it. Only at weight 0.001 does the regression shrink to a few-percent micro-effect, and at that level the budget loss value during training is ≈ 1 × 10⁻⁵ (versus a data-loss baseline ~10), meaning the physics term has essentially stopped influencing optimisation. The sweep therefore characterises the trade-off as a structural property of the loss landscape in the weight regime where the physics constraint is doing non-trivial work, not a tunable knob: any weight that materially enforces water-budget consistency materially suppresses the high-reflectivity tail.
+The CSI@30 cost is essentially saturated at weight ≥ 0.01 — the paired CIs for weights 0.01 and 0.1 overlap on both splits, while the regression quadruples in moving from weight 0.001 to 0.01. Only at weight 0.001 does the regression shrink to a single-percent micro-effect (event_test CI even crosses zero), and at that level the budget loss value during training is ≈ 1 × 10⁻⁵ (versus a data-loss baseline ~10), meaning the physics term has essentially stopped influencing optimisation. The sweep therefore characterises the trade-off as a structural property of the loss landscape in the weight regime where the physics constraint is doing non-trivial work, not a tunable knob: any weight that materially enforces water-budget consistency materially suppresses the high-reflectivity tail.
 
 One confound is worth stating: all three ab3b variants are warm-started from the ab3 best checkpoint and trained for a further 60 epochs with a fresh cosine LR schedule. Bulk-metric gains over ab3 (e.g. CSI@1 0.470 → 0.492–0.507) may therefore mix the effect of the budget term with the effect of additional fine-tuning under a re-decayed LR. The CSI@30 collapse, however, is observed only in the two variants where the budget term carries non-trivial weight and is essentially absent in the weight = 0.001 variant where the budget value drops to ≈ 10⁻⁵, so the extreme-tail finding is robust to this confound even if some of the bulk-metric improvement is not attributable to the physics term alone. Isolating the warm-start effect would require an ab3-warmstart control run, which we leave to future work.
 
