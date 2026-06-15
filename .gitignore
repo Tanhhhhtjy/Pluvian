@@ -32,11 +32,12 @@ tmp_*/
 tmp_*.py
 *.tmp.json
 
-# Eval scratch (keep only ckpt/eval/*/metric.json, exclude raw arrays)
+# Eval scratch (keep only ckpt/eval/*/metric.json, exclude raw arrays and sample previews)
 ckpt/eval/**/*.npz
 ckpt/eval/**/*.npy
+ckpt/eval/**/sample_*.png
 eval_out/
-eval/
+/eval/
 
 # Logs / temp
 *.log
