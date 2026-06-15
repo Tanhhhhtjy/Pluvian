@@ -1,8 +1,32 @@
 # Pluvian Phase 7d Experiment Ledger
 
-Updated: 2026-06-02 UTC.
+Updated: 2026-06-16 UTC.
 
 This ledger records post-handoff experiment facts for the active Pluvian goal. It is intentionally separate from `HANDOFF_PHASE7D.md`, which is a time-stamped handoff snapshot.
+
+## 2026-06-15 / 16 Update: CDU lands, budget-weight sweep finishes, round-2 review surfaces cherry-picking risk
+
+### What finished
+
+- **CDU training** (`ckpt/ablation_3_cdu_p7d/best.pt`): 60 ep complete. Holdout — event_test: CSI@1 0.488, CSI@10 0.645, CSI@30 0.285, MAE 4.08 (vs ab3 0.470/0.632/0.291/4.27). Paired delta CI vs ab3 on CSI@30: event [-0.0096, -0.0002] (marginal but significant micro-regression); test_robust [-0.0045, +0.0032] (null). **CDU avoids the ab3b trade-off but does not recover the extreme tail** — the framing in §3.4 / §4.4 / Abstract reflects this honestly.
+- **Budget-weight sweep** (`ckpt/ablation_3b_era5_budget_w{001,0001}_p7c/best.pt`, 60 ep each): finished. CSI@30 (event_test / test_robust) per weight: 0.276/0.263 (w=0.001) → 0.212/0.211 (w=0.01) → 0.210/0.215 (w=0.1, main). Trade-off saturates at w≥0.01; only w=0.001 brings CSI@30 close to ab3, but at that weight the budget loss value is ≈1e-5 (vs data loss ~10). Captured in §3.2.
+
+### Round-2 reviewer concerns (see `docs/paper/REVIEW_round2.md`)
+
+- **N1 (most dangerous, cherry-picking)**: at weight=0.001, ab3b Pareto-dominates the main weight=0.1 ab3b on bulk metrics (CSI@1 0.507 vs 0.492, MAE 3.97 vs 4.10), while paying only -5% CSI@30 instead of -28%. Reviewer asks why w=0.1 is the main ab3b. The "loss=1e-5 so the physics term is not working" defence is *post-hoc* — if it is not working, why are bulk metrics still moving by +0.037 CSI@1 vs ab3? Most likely explanation: all three ab3b variants are warm-started from ab3 best.pt and trained 60 more epochs with a fresh cosine LR, so part of the bulk gain is plain fine-tuning, not the budget loss. **Mitigation in §3.2**: added an explicit confound paragraph stating the warm-start risk and noting that the CSI@30 collapse is observed only in the two variants with non-trivial budget weight, so the negative-extreme finding is robust. **Pending decision** (needs user): either (a) accept this written caveat, or (b) train an ab3-warmstart control (~18h GPU) to fully isolate the budget effect, or (c) re-designate w=0.001 as the main ab3b and rewrite §3.2 / §4.2 with the smaller -5% effect size.
+- **N2**: §3.4 says CDU is "essentially neutral at extreme tail" while admitting the 7-30 09:00 case has CDU output max 26 dBZ vs GT 46 dBZ. Reviewer wants per-window CSI@30 (CDU-ab3) distribution rather than a single number — currently not reported.
+- **N3**: with CDU now framed as "doesn't recover", contribution (iii) is reduced to a small architectural win. Reviewer suggests either re-framing the whole paper as a *diagnostic / negative-result methods paper* (with CDU demoted to a confirming ablation) or splitting CDU into a separate application-track submission.
+
+### What's left for v3 / submission
+
+- (User decision) Resolve N1 (caveat vs new run vs re-designate main ab3b).
+- (User decision) Re-frame N3: methods paper vs application paper.
+- Fig 1 (architecture schematic) and Fig S1 (input example) — need user style call.
+- Bibliography: placeholders to real BibTeX (agent-prone to fabrication, leave to user pass).
+- External baseline (round-1 C3) — non-trivial; defer to round-2 revision or list as limitation.
+- Optional ab3-warmstart control if N1 mitigation by writing alone is judged insufficient.
+
+
 
 ## 2026-06-14 Decision Update: ab3 is the main-line model; ab3b budget loss rejected
 
