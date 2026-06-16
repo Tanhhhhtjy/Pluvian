@@ -37,7 +37,16 @@ Fix landed (commit `300b9cb`): dataset now applies `utils.dbz_to_rainrate` (Z = 
 
 **Window OPEN (2026-06-16 16:23 CST, cron poll):** ZhaoJiaming's first job finished (no rank held its full memory). 6 GPUs are now fully idle (≥48 GB free each) and 2 GPUs (1 and 2) hold ≈24 GB of leftover allocation but are at 0% utilization — likely a new shorter job he started (TensorBoard now reports step 40 / epoch 0.12, fresh run). Five-way parallel retrain on GPUs {0, 3, 4, 5, 6} is now feasible without contention. **Awaiting user GO signal** — the cron autopilot will not launch retraining unsupervised.
 
-The cron-driven autopilot is not allowed to launch retraining without user acknowledgement; this is a paper-rewriting-scale operation.
+**LAUNCHED (2026-06-16 22:09 UTC / 06:09 CST + 1 day, user GO):** Smoke test passed (5 batches under mm/h, no NaN, loss healthy). Five-way parallel retrain dispatched:
+  - GPU0 ab1 (radar baseline) — `configs/ablation_1_p7d.yaml`, PID 2020763
+  - GPU3 ab2 (xcoreA, +PWV) — `configs/ablation_2_p7d_xcoreA.yaml`, PID 2020764
+  - GPU4 ab3 (+ERA5) — `configs/ablation_3_era5_p7c.yaml`, PID 2020765
+  - GPU5 ab3b (+budget loss, weight=0.1 main) — `configs/ablation_3b_era5_budget_p7c.yaml`, PID 2020766
+  - GPU6 ab3-cdu (**from-scratch**, no warm-start) — `configs/ablation_3_cdu_p7d.yaml`, PID 2020767. Note: this is a deliberate change vs the previous run which warm-started CDU from ab3 best.pt — running from-scratch addresses reviewer C6 (warm-start vs from-scratch confound) at no extra cost.
+
+All 5 GPUs at 100% utilization, 25–33 GB each. Initial step-by-step loss curves are healthy (loss decreasing 0→20 ≈ 35–45 → 15–30 across step 80). ab3b budget loss = 5e-4 (5× the dBZ-era value), which makes the PDE term meaningful in mm/h units. Estimated wall-clock ≈ 18–20 h ⇒ all five checkpoints expected by **2026-06-17 16:00–18:00 UTC**.
+
+The cron-driven autopilot is now in monitor mode (will not auto-relaunch any failed run).
 
 ## 2026-06-15 / 16 Update: CDU lands, budget-weight sweep finishes, round-2 review surfaces cherry-picking risk
 
