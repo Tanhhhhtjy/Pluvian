@@ -31,6 +31,8 @@ Fix landed (commit `300b9cb`): dataset now applies `utils.dbz_to_rainrate` (Z = 
   3. Reduce `grad_accum` from 4 to 2 (halves activation memory but changes effective bs)
   4. Run the five retrains serially (~4 days wall-clock instead of ~36 h)
 
+**ETA refresh (2026-06-16 14:47 CST, cron poll):** TensorBoard scrape shows ZhaoJiaming's job at step 50 / ~134 (epoch 1.16 of 3), advancing at ~1.6 min/step. Expected free GPUs around **17:00–17:30 CST**. Strategy when GPUs free up: launch all 5 retrains in parallel (one per GPU); each ~18–20 h, so the full Phase 7e retraining completes around 2026-06-17 11:00–13:00 CST. Cron will not auto-launch — user must signal go.
+
 The cron-driven autopilot is not allowed to launch retraining without user acknowledgement; this is a paper-rewriting-scale operation.
 
 ## 2026-06-15 / 16 Update: CDU lands, budget-weight sweep finishes, round-2 review surfaces cherry-picking risk
