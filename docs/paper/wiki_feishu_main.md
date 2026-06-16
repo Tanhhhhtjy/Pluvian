@@ -1,6 +1,6 @@
 # Pluvian — 多模态深度学习短临降水预报
 
-> 项目协作主文档 | 投稿目标：*npj Climate and Atmospheric Science* | 仓库：[Tanhhhhtjy/Pluvian](https://github.com/Tanhhhhtjy/Pluvian) | 当前分支：`phase7b/integrated` | 最新 commit：`316f1b9` | 文档版本：2026-06-17 v1
+> 项目协作主文档 | 投稿目标：*npj Climate and Atmospheric Science* | 仓库：[Tanhhhhtjy/Pluvian](https://github.com/Tanhhhhtjy/Pluvian)
 >
 > 📂 **细节请参阅子文档**：*Pluvian — 实验过程与决策记录*（process 子页）
 
@@ -10,25 +10,13 @@
 
 > Short-term precipitation nowcasting over North China remains difficult due to convective intermittency and underused multimodal context. We present a 6-minute-resolution, 108-minute deep-learning nowcasting framework that progressively fuses radar with column water vapour (PWV) and ERA5 large-scale environmental fields. Stepwise fusion yields monotonic improvement across CSI at 1/5/10 mm h⁻¹, FSS, and MAE on an event-based test set; CSI@30 is non-monotonic across the cascade. Pushing further with a physically motivated water-budget loss improves light-to-moderate skill but causes extreme CSI@30 to collapse. Using a pooled-CSI diagnostic with neighbourhood max-pool tolerance, we show this is not spatial displacement but physical smoothing of convective cores — a differentiating negative result for physics-informed loss design. We further introduce Cubic Dual Upsampling (CDU); CDU avoids the budget-loss trade-off without itself recovering the extreme tail, which we frame as an open architectural problem.
 
-> ⚠️ **当前数据状态**：4.x 节的具体指标基于旧 dBZ-era 数据。2026-06-16 发现 dataset 单位事故，5 路并行重训进行中（mm/h 单位），ETA 2026-06-17 上午。新数字预期收紧但故事方向不变。详见 process 子文档 §A。
-
 ---
 
 ## 1. 项目概览
 
-**研究目标**：构建能利用**多模态物理观测**（雷达 + GNSS-PWV + ERA5）的深度学习短临降水预报框架，重点关注**极端降水事件**的预报技能。
+**研究目标**：构建能利用多模态物理观测（雷达 + GNSS-PWV + ERA5[包括风速、湿度等物理量]）的深度学习短临降水预报框架，重点关注极端降水事件的预报。
 
-**论文三幕叙事**：
-
-| 幕 | 论点 | 性质 |
-|---|---|---|
-| 一 | 多模态融合（radar→+PWV→+ERA5）单调提升轻中量预报技能 | 正面贡献 |
-| 二 | 物理 PDE 损失（water-budget）能继续推高 bulk 指标，但**抹平**极端对流核 | 诚实负结果 |
-| 三 | CDU 双分支解码器在架构层 sidesteps 物理损失副作用，但极端 tail 恢复仍是 open problem | 架构 ablation |
-
-**当前阶段**：论文初稿（§1–§4 + Tables 1–2）已经过两轮独立同行评审，正在解决 reviewer 提出的 unit-consistency 问题（Phase 7e 重训中）和 SOTA baseline 缺失（Phase B 计划中）。
-
-**数据集摘要**：
+**数据集**：
 
 | 维度 | 取值 |
 |---|---|
@@ -70,125 +58,88 @@ cascade 在 CSI@1/5/10、FSS、MAE 上**单调提升**；CSI@30 在 ab2 阶段�
 
 ---
 
-## 3. 关键实验结果
+## 3. 方法论
 
-> 以下为 dBZ-era 数据，pending mm/h 单位下重训。
+### 3.1 模型架构总览
 
-### 3.1 主指标天梯（event_test, 96 windows）
+整体是 **encoder–decoder** 主干 + **多模态融合** 的设计。三条信息流在 bottleneck 处会合：
 
-| Model | Modality | CSI@1 | CSI@10 | CSI@30 | MAE |
-|---|---|---:|---:|---:|---:|
-| ab1 | radar | 0.397 | 0.565 | **0.308** | 5.19 |
-| ab2 | +PWV | 0.432 | 0.591 | 0.283 | 4.83 |
-| ab3 | +ERA5 | 0.470 | 0.632 | 0.291 | 4.27 |
-| ab3b | +budget loss | 0.492 | 0.641 | **0.210** ↓ | 4.10 |
-| ab3-cdu | +CDU decoder | **0.488** | **0.645** | 0.285 | **0.08** |
+- **雷达分支（dense grid）**：标准 conv stem + 两层 stride-2 下采样到 H/8 × W/8，叠两层 windowed self-attention 块（捕获空间局部依赖）+ 一层 temporal block（捕获 12 帧时序演化）。中间三层 feature map（H/2, H/4, H/8）作为 U-Net skip 出来给 decoder。
+- **PWV 分支（sparse token）**：GNSS-PWV 站点不在规则网格上，所以不用 conv，而是把每个站的 (PWV value, lon, lat, time) 编码成 token，给 Fourier positional encoding，进 cross-attention 到 radar 的 dense feature 上。这个设计避免把稀疏观测插值上栅格再卷积所引入的过度平滑。
+- **ERA5 分支（coarse grid）**：ERA5 是 0.25° 网格的 reanalysis，u/v/q/T 四个变量在 8 个 pressure level 上展开成 32 channels。先用一个轻量 conv tower 在 coarse grid 上算 feature，再 bilinear 上采样并残差加到 H/8 的雷达 feature 上。**重点：ERA5 的重计算保留在 coarse grid 上**，这是 mismatch-aware 的设计，避免直接 1 km 上跑 32-channel attention 爆显存。
 
-**关键观察**：
-- ab1→ab2→ab3：bulk 单调上升，CSI@30 在 ab2 微回归
-- ab3b：bulk 全场最优，**但 CSI@30 暴跌 −28%**（paired bootstrap CI 严格 < 0）
-- ab3-cdu：bulk 改进，CSI@30 持平 — sidesteps trade-off，未恢复 tail
+三个分支在 bottleneck 处由 **GatedAsymmFusion** 模块融合：一个 learnable gate 在像素层面决定 PWV 信号 vs 站点观测信号哪个权重更高，避免把这两条本来语义不同的稀疏通道粗暴 concat。
 
-### 3.2 Pooled-CSI 诊断 — 核心方法学贡献
+decoder 阶段先用一个 **per-spatial-location cross-attention** 把 12 帧的融合 token 映射到 18 个 learnable lead-time queries —— 每个未来帧"自主选取"它最关心的历史片段。然后通过三阶 U-Net 上采样（H/8 → H/4 → H/2 → H）回到原分辨率，每阶都有 skip-fuse。最后两个 head：一个 single-channel rain head（输出 mm/h），一个 single-channel PWV head（用于辅助物理一致性损失）。
 
-CSI@30 在 max-pool window w ∈ {1, 4, 16} px 下的演化（event_test）：
+### 3.2 三个核心创新
 
-| Model | w=1 | w=16 | 解读 |
-|---|---:|---:|---|
-| ab3 | 0.291 | **0.326** | Displaced — 邻域容忍下回升 |
-| ab3b | 0.210 | 0.222 | **Smoothed** — 不论邻域多大都救不回 |
+**(i) 对稀疏 / 网格 / 物理量的非对称融合**
 
-→ ab3b 的失败模式锁定为 "强对流核被物理性抹平"，这是论文最有 differentiating power 的实验证据。
+我们没有把 PWV 和 ERA5 都强行插值到雷达网格上再 channel-concat，而是给每条信息流一个跟它"自然语义"匹配的接口：
+- PWV 留在 sparse token 域，靠 cross-attention 进入 dense radar
+- ERA5 留在 coarse grid，靠残差 add 进入 H/8 dense
 
----
+这背后的判断：模态对齐（modality alignment）的关键不是分辨率统一，而是**让模型自己学跨模态关联**。
 
-## 4. 进度与状态
+**(ii) 物理 PDE 约束作为辅助损失（探索性）**
 
-### 4.1 论文章节状态
+我们尝试把水汽收支方程作为 loss term：
 
-| 章节 | 状态 |
+$$\varepsilon = \partial \text{PWV} / \partial t + (\Delta p / g) \cdot \nabla \cdot (qV) + P_{\text{predicted}}$$
+
+理论上要求模型预测的降水 $P$ 和环境水汽通量散度物理一致。这是 PINN-style 的物理约束，文献里近年很流行。**但我们的实验揭示这种 pointwise PDE 约束有副作用** —— 这正是论文第二幕（negative result）和 pooled-CSI 诊断工具（贡献 2）出现的动机。
+
+**(iii) 双分支解码器 (CDU) 替代单一上采样路径**
+
+标准 PixelShuffle decoder 在做 ×2 上采样时会隐式低通滤波——高频细节（强对流核的尖锐边界）容易被平均掉。CDU 把上采样拆成两条独立路径：低频分支显式保留平滑场，高频分支专门学**残差**纹理，最后 concat 融合。这是从频域思维做的架构修改，跟损失函数完全正交。
+
+### 3.3 训练协议
+
+| 维度 | 取值 |
 |---|---|
-| §1 Introduction | ✅ 初稿 ~620 字 |
-| §2 Method | ✅ 初稿 ~1500 字 |
-| §3 Results (4 subsections) | ✅ 初稿，需 Phase 7e 后数字替换 |
-| §4 Discussion | ✅ 初稿 ~880 字 |
-| Tables 1/2 | ✅ 含 bootstrap CI |
-| Fig 1（架构示意） | ❌ 待绘 |
-| Fig S1（输入示例） | ❌ 待绘 |
-| Bibliography | ❌ placeholder → 真 BibTeX |
+| 损失主项 | intensity-stratified loss（5 个强度桶 × 长尾权重 × CE + weighted MSE） |
+| 辅助损失 | FSS-based neighbourhood loss（多阈值，weight 0.1） |
+| 探索性 | water-budget PDE residual loss（仅 ab3b 用，weight 0.1） |
+| Optimizer | AdamW，lr 3e-4，cosine + 2 epoch warmup |
+| Batch | 物理 1 + grad-accum 4 = effective 4，bf16 mixed precision |
+| Epoch | 60 |
+| 硬件 | RTX 4090 24 GB / 模型，~1100 s / epoch |
+| 评测 | full-set CSI（累加 hits/FA/miss 后算）、FSS、MAE、paired bootstrap CI |
 
-### 4.2 同行评审
+**关键设计选择**：
+- 所有 ablation（ab1/ab2/ab3/ab3b/CDU）共享**同一份训练 schedule、loss 配置、随机种子和评测协议**。这样模型间的差异**只来自 input modality 或 architecture 的单一改动**，否则 ablation 结论会被超参数差异污染。
+- intensity-stratified loss 是为了对抗"长尾分布塌陷"——降水分布极度长尾，朴素 MSE 会让模型预测大面积常规小雨 + 完全 miss 极端尾部。我们用强度桶的样本权重 [0.1, 1, 2, 4, 8] 显式让 loss 对高强度 band 更敏感。
 
-- **Round 1**（2026-06-15）：8 个 concerns。**C1（CI 重叠）已用 paired bootstrap 反驳**；C4/C7/C8/M1/M2 已修订
-- **Round 2**（2026-06-16）：3 个新 concerns（N1 cherry-picking / N2 §3.4 vs Fig 4 不自洽 / N3 framing 弱化）
+### 3.4 评测协议
 
-详细 reviewer 报告与对策见 process 子文档 §C。
-
-### 4.3 当前正在进行
-
-🔄 **Phase 7e 5 路并行重训**（mm/h 单位）：
-
-| GPU | 模型 |
-|---|---|
-| 0 | ab1 (radar) |
-| 3 | ab2 (+PWV) |
-| 4 | ab3 (+ERA5) |
-| 5 | ab3b (+budget loss) |
-| 6 | ab3-cdu (**from-scratch**, 自动解决 reviewer C6) |
-
-ETA：**2026-06-17 上午**（5 个新 ckpt 全完）。
+- **Test split 分两类**：`event_test` 是 4 个 storm 天（极端事件评测），`test_robust` 是 8 个普通天（鲁棒性评测）。这两个 split 对应的 narrative 不同：前者答"对极端事件预报得怎么样"，后者答"在日常普通天气下还稳不稳"。
+- **统计严谨性**：所有 CSI/FSS 都按 full-set 累加 hits/FA/miss 再算（避免 batch-mean 对小批样本敏感）；ablation 之间的差异用 **paired bootstrap delta CI**（n_boot = 2000，按天分层）验证统计显著性，而不是只看点估计。
+- **Pooled-CSI 诊断**：核心方法学贡献。同一份预报和真值，分别在 max-pool window w ∈ {1, 4, 16} 像素下计算 CSI——通过比较 CSI 随 w 的恢复曲线，把 displacement 错误 vs smoothing 错误分开。这把传统 CSI / FSS 都聚合掉的两类失败模式显式拆出来。
 
 ---
 
-## 5. 下一步计划
+## 4. 下一步与风险
 
-### 5.1 Phase 7e 收尾（明天）
+### 4.1 路线图
 
-重训完成后自动触发：5 模型 holdout eval → bootstrap CI → paired delta → pooled-CSI → 论文图重出 → §1–§4 数字全替换 → **第三轮 reviewer**。
+**Phase 7e**：所有 5 个模型在重训中（mm/h 单位修正后从头训），完成后会用新数据重出全部论文图、表、CI。这是论文成稿前的 critical path。
 
-### 5.2 Phase B — SOTA Baseline（约 2-3 周）
+**Phase B — SOTA 对比**：在我们的数据 / 切分 / 评测协议下重训 4 个公开 baseline（pysteps STEPS / Earthformer / exPreCast / DGMR），radar-only + 手工加 ERA5 channel 两套，跟 ab1 和 ab3 分别公平对比。这是 reviewer 必问的"你们和已发表方法比怎么样"。
 
-Reviewer round-1 C3 要求加外部 baseline 对比。已确认 Tier 1+2 方案：
-- pysteps STEPS（统计基线）
-- Earthformer (NeurIPS 2022)
-- exPreCast (ICLR 2026)
-- DGMR (Nature 2021)
-- 给上述 baseline 手工加 ERA5 channel 作为 multimodal extension
+**投稿前**：
+- 架构示意图（Fig 1）+ 输入示例图（Fig S1）
+- Bibliography 从 placeholder 转 BibTeX
+- §1–§4 数字最终 audit + reviewer 回信
 
-详细 baseline 调研与执行计划见 process 子文档 §D。
+### 4.2 已识别的风险与限制
 
-### 5.3 投稿前 todo
+| 限制 | 影响 | 已采取的应对 |
+|---|---|---|
+| event_test 仅 4 storm 天 / test_robust 仅 8 天 | 外推性受限，reviewer 必问"能否泛化到其他季节、其他区域" | 论文 §4.5 显式 scope；多季节 / 多区域留 future work |
+| 单成员确定性输出 | 无 ensemble spread，不能讨论概率预报 | 只报 MAE 不报 CRPS；集成留 future work |
+| 训练数据仅 2023 年 5–8 月 | 冬季层状 / 混合相态降水未覆盖 | limitation 显式标注 |
+| 公开 multimodal nowcasting SOTA 代码缺失 | FusionCast / MAG-Net / VMU-Diff 全闭源，做不到 fair multimodal SOTA 对比 | 在 Phase B 中只能给开源 radar-only baseline 手工加 ERA5 通道，作为 our extension 比较 |
+| 物理 PDE loss 的负结果在文献里没有先例 | §4.2 论点要靠我们自己的 ablation 证据撑 | 通过 budget weight sweep 增强论点严谨性 |
 
-| 项 | 估时 |
-|---|---|
-| Fig 1 / Fig S1 | 1 天（导师拍板风格） |
-| Bibliography → BibTeX | 0.5 天 |
-| 论文最终 polish + reviewer 回信 | 1 天 |
-
----
-
-## 6. 风险与限制
-
-| 限制 | 影响 |
-|---|---|
-| event_test 仅 4 storm 天 | 外推性受限，reviewer 必问 |
-| 单成员确定性输出 | MAE/CRPS 数学等价，不能讨论 ensemble spread |
-| 训练数据仅 2023 年 5–8 月 | 冬季层状 / 混合相态未验证 |
-| 公开 multimodal nowcasting SOTA 代码不足 | FusionCast / MAG-Net / VMU-Diff 全闭源，无法 fair retraining |
-
-均已在论文 §4.5 显式声明。
-
----
-
-## 7. 资源链接
-
-- **GitHub 仓库**：https://github.com/Tanhhhhtjy/Pluvian
-- **本机工作目录**：`/data4/WuMingrui/TianJinyu/npj/pluvian`
-- **完整决策记录**：`docs/experiments/pluvian_phase7d_ledger.md`
-- **论文初稿**：`docs/paper/{MAIN.md, section_1-4, tables_1_2}`
-- **Reviewer reports**：`docs/paper/REVIEW_round{1,2}.md`
-- **过程子文档**：*Pluvian — 实验过程与决策记录*（飞书 wiki child page）
-
----
-
-> *本主文档为高层汇报。所有过程细节、踩坑、决策推理、子实验数据见 process 子文档。所有指标在论文最终发表前可能调整。*
+详细的过程数据、reviewer concerns 完整对策、决策时间线见 process 子文档。
