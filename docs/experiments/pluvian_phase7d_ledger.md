@@ -46,6 +46,8 @@ Fix landed (commit `300b9cb`): dataset now applies `utils.dbz_to_rainrate` (Z = 
 
 All 5 GPUs at 100% utilization, 25–33 GB each. Initial step-by-step loss curves are healthy (loss decreasing 0→20 ≈ 35–45 → 15–30 across step 80). ab3b budget loss = 5e-4 (5× the dBZ-era value), which makes the PDE term meaningful in mm/h units. Estimated wall-clock ≈ 18–20 h ⇒ all five checkpoints expected by **2026-06-17 16:00–18:00 UTC**.
 
+**Progress refresh (2026-06-16 22:46 UTC, +37 min, cron poll):** All 5 PIDs alive (etime 37:37). Per-epoch wall-clock: ab1 1014.6 s, ab2 1027.3 s, ab3 1029.8 s, ab3b 1069.5 s, ab3-cdu 1267.3 s. After completing epoch 1, projected total time = 60 × ~17–21 min ≈ **17–21 h**. Loss decreasing healthily across all five (ep0 ~35–45 → ep1 ~31–45, ab2 highest at 44.6 as expected from PWV cross-attention warmup). No NaN, no OOM, no rank failure. Continue monitoring.
+
 The cron-driven autopilot is now in monitor mode (will not auto-relaunch any failed run).
 
 ## 2026-06-15 / 16 Update: CDU lands, budget-weight sweep finishes, round-2 review surfaces cherry-picking risk
