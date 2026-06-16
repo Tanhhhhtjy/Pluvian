@@ -20,6 +20,7 @@ except Exception:
         pass
 
 from . import radar_io, pwv_io, station_io, era5_io
+from . import utils
 
 MANIFEST_PATH = Path(__file__).with_name("manifest.csv")
 
@@ -86,6 +87,13 @@ class NPJDataset(Dataset):
             radar[:] = 0.0
             radar_mask[:] = 1.0  # zero-day frames are "known no-rain"
             radar_valid = True
+        # Phase 7e: convert raw dBZ -> mm/h (China operational Z=300R^1.4) so
+        # the rain head, intensity-stratified loss bands (in mm/h), CSI/FSS
+        # thresholds (in mm/h) and `band_centers` (in mm/h) all see units
+        # consistent with the paper text. Prior models were silently trained
+        # on dBZ values fed against mm/h-labelled bins; new ckpts must be
+        # retrained.
+        radar = utils.dbz_to_rainrate(radar)
         meta["radar_sample_valid"] = radar_valid
 
         # PWV: 30 min steps
