@@ -4,6 +4,35 @@ Updated: 2026-06-16 UTC.
 
 This ledger records post-handoff experiment facts for the active Pluvian goal. It is intentionally separate from `HANDOFF_PHASE7D.md`, which is a time-stamped handoff snapshot.
 
+## 2026-06-16 Phase 7e (CRITICAL UNIT FIX) — paper-wide dBZ-vs-mm/h discrepancy
+
+While preparing the SOTA baseline survey (round-1 reviewer C3) we discovered that the paper's CSI thresholds, FSS thresholds, MAE values and `band_centers` are all written in mm h⁻¹, but the dataset was emitting raw dBZ. Concretely:
+- `pipeline/data_loader.py::NPJDataset.__getitem__` returned the radar tensor directly from `radar_io.load_radar_sequence`, which is xarray-decoded dBZ (typical range 0–70 dBZ)
+- `scripts/train.py::_intensity_loss` bucketizes the target with `band_edges = [0.1, 1.0, 8.0, 30.0]` labelled mm/h
+- `scripts/train.py` validate / eval CSI thresholds = `(1.0, 5.0, 10.0, 30.0)` labelled mm/h
+- `model/decoder.py` `band_centers = (0.0, 0.5, 4.5, 19.0, 50.0)` with internal comment "mm/h"
+
+So the rain head was being trained against dBZ targets while every label said mm/h. CSI numbers are self-consistent (CSI is a well-defined metric on any threshold), but the paper's "CSI@30 = extreme rain" framing is false: 30 dBZ ≈ 1.6 mm/h is moderate rain, not extreme.
+
+Reviewer round 1 (M3) and round 2 (m1) both flagged the inconsistency between "30 dBZ contour" in Fig 4 and "mm/h" in the metric tables. We had interpreted it as a Fig 4 caption issue; it is paper-wide.
+
+Fix landed (commit `300b9cb`): dataset now applies `utils.dbz_to_rainrate` (Z = 300 R^1.4) before returning the radar tensor. All downstream loss / metric / band_centers definitions are now consistent with the paper text.
+
+**Implications:**
+- All five trained checkpoints (ab1, ab2, ab3, ab3b, ab3-cdu) are invalidated and must be retrained from scratch under mm/h.
+- New event_test pixel distribution: max 103.8 mm/h, mean 0.54, >30 mm/h: 0.04% (vs old >30 dBZ: 6.4%). Statistical power on the extreme tail will be lower.
+- The ab3 vs ab3b CSI@30 collapse story may shift in magnitude after retraining; the qualitative direction is expected to hold but cannot be claimed without re-running.
+- All paper figures, tables, paired CIs and the ledger metric snapshots from before 2026-06-16 are now stale.
+- Phase B (SOTA baseline retraining) is blocked until Phase 7e completes, because external baselines must train against the mm/h target distribution to be comparable to ours.
+
+**Current blocker (2026-06-16 14:00 CST):** GPU sharing — `nvidia-smi` shows all 8 GPUs occupied by an unrelated user (ZhaoJiaming, streaming-VLM training, ~24 GB / GPU). Each GPU has ~24 GB free vs our prior training footprint of ~33 GB / model. Smoke test (`logs/unit_fix_smoke.log`) OOM'd on `GroupNorm` allocation. Options awaiting user decision:
+  1. Wait for the other user's job to release GPU memory
+  2. Try `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` to fit into ≤24 GB
+  3. Reduce `grad_accum` from 4 to 2 (halves activation memory but changes effective bs)
+  4. Run the five retrains serially (~4 days wall-clock instead of ~36 h)
+
+The cron-driven autopilot is not allowed to launch retraining without user acknowledgement; this is a paper-rewriting-scale operation.
+
 ## 2026-06-15 / 16 Update: CDU lands, budget-weight sweep finishes, round-2 review surfaces cherry-picking risk
 
 ### What finished
