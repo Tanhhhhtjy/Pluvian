@@ -401,3 +401,16 @@ python scripts/plot_bootstrap_delta_ci.py \
   --delta_json docs/experiments/pluvian_bootstrap_delta_ci.json \
   --out_dir ckpt/figures/bootstrap_delta_ci
 ```
+
+**ab2 re-launched (2026-06-17 17:27 UTC, user GO):** Re-running with the correct main-line config `ablation_2_p7d.yaml` (60 epoch from-scratch, lr=3e-4, standard intensity-band weights). PID 2491002 on GPU0. Confirmed at ep0 it40 (loss 19.8 decreasing, GPU0 100% util, 28GB). ETA ~17h ⇒ completion 2026-06-18 ~10:30 UTC. The original `ablation_2_p7d_xcoreA.yaml` ckpt is kept on disk in case it's useful as a separate xcoreA-fine-tune ablation row.
+
+**Five-run status snapshot (2026-06-17 17:30 UTC):**
+
+| Model | Run state | Last avg loss | Latest val csi_1mm / csi_30mm | Notes |
+|---|---|---|---|---|
+| ab1     | ✅ done 60 ep | 21.97 | 0.291 / 0.104 | clean baseline |
+| ab2     | 🔄 RE-RUN ep0 (just relaunched) | — | — | xcoreA bug; ab2_p7d now in flight |
+| ab3     | ✅ done 60 ep | 21.80 | 0.316 / 0.102 | ERA5 fusion, slightly better than ab1 on csi_1mm |
+| ab3b    | 🔄 ep58 it1420/1664 | 21.67 | 0.306 / 0.101 | budget loss active (bud=0.0005), almost done |
+| ab3-cdu | 🔄 ep49 it680/1664 | 22.06 | 0.298 / 0.098 | from-scratch this time, slowest |
+
