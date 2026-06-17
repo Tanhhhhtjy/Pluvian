@@ -50,6 +50,17 @@ All 5 GPUs at 100% utilization, 25–33 GB each. Initial step-by-step loss curve
 
 **Progress refresh (2026-06-17 23:46 UTC, +97 min, cron poll):** All 5 PIDs alive (etime 1:37:17). Epoch-avg loss continues healthy decrease across all five: ab1 29.12→28.73, ab2 41.71→40.97, ab3 28.97→28.64, ab3b 28.89→28.72, ab3-cdu 29.79 (ep2→ep3). Iter-level spikes (loss>100) observed across all models in recent 50 lines (count: ab1 2, ab2 8, ab3 3, ab3b 2, ab3-cdu 4) — interpreted as **bf16 batch-level noise** (mm/h max ≈ 103 means a single batch hitting an extreme cell can momentarily produce large loss). Epoch averages staying flat-to-decreasing rules out divergence; do not intervene. Average epoch wall-clock now ~17.5 min ⇒ remaining 55 epochs × ~17.5 min ≈ **16 h**, completion ETA **2026-06-17 14:30–15:30 UTC** (CST 22:30–23:30).
 
+**Status refresh (2026-06-17 17:30 UTC, +19h15m cron poll):** Three runs **finished cleanly** (60 epoch) — ab1, ab3, ab3b. Two still running — ab3b at ep58 it1120/1664, ab3-cdu at ep49 it420/1664. Final epoch losses for the three finished: ab1 21.97, ab3 21.80, ab2 37.76 (ab2 only ep14, see below); ab1 val csi_1mm=0.291 / csi_30mm=0.104, ab3 val csi_1mm=0.316 / csi_30mm=0.102 — these are end-of-training val metrics on mm/h units. Best ckpt selection is by val csi_10mm. Remaining ETA: ab3b ~2 h, ab3-cdu ~5 h.
+
+**⚠️ Config bug discovered (cron flagged; do not auto-fix):** When launching the 5-way retrain we picked `configs/ablation_2_p7d_xcoreA.yaml` for ab2, but xcoreA is a fine-tune config (lr=5e-5, max_epochs=15, **different intensity-band weights** `[0.1, 1.0, 2.0, 5.0, 12.0]` vs the standard `[0.1, 1.0, 2.0, 4.0, 8.0]`, and FSS threshold weights `[1.0, 0.5, 0.5]` vs `[1.0, 0.1, 0.1]`). The paper's main-line ab2 is `ablation_2_p7d.yaml` (from-scratch 60 epoch, default loss). The current ab2 ckpt is therefore not comparable to ab1/ab3/ab3b/ab3-cdu under the same training budget and loss weights.
+
+**Options awaiting user decision:**
+  1. **Re-run ab2 with `ablation_2_p7d.yaml` (60 epoch from-scratch, ~17 h)** — keeps ablation table strictly comparable. Cost: 1 GPU-night extra.
+  2. **Keep the current xcoreA ckpt as "ab2"**, and document in paper §3.1 / Method that ab2 is a fine-tune variant with 15 epoch + adjusted loss weights. Cost: 0 GPU-h but weakens "shared schedule + loss" claim, easy reviewer target.
+  3. **Drop xcoreA entirely** and report only ab1 → ab3 (skip ab2). Cost: 0 GPU-h but loses the +PWV ablation row.
+
+Cron autopilot will not launch ab2 re-run without explicit user GO.
+
 The cron-driven autopilot is now in monitor mode (will not auto-relaunch any failed run).
 
 ## 2026-06-15 / 16 Update: CDU lands, budget-weight sweep finishes, round-2 review surfaces cherry-picking risk
