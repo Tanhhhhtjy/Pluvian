@@ -437,3 +437,75 @@ vs old dBZ-era ab1 (MAE 5.19, CSI@1 0.397, CSI@10 0.565, CSI@30 0.308):
 
 **Post-training eval pipeline launched (2026-06-18 19:32 UTC, PID 3356216):** running 10 holdout evals (5 ckpts × 2 splits) sequentially on GPU0. ETA ~45 min. After that we still need bootstrap CIs (~5 h serial), pooled-CSI, per-lead, paired delta CIs, and figure regeneration. None of these touch the trained models — they are read-only inference.
 
+
+## 2026-06-18 Phase 7e — paired delta CIs change the paper thesis
+
+Paired bootstrap delta CIs (n=2000, seed=42, day-stratified) for the
+5 mm/h-era ckpts are now in `docs/experiments/pluvian_paired_delta_phase7e_*.json`.
+
+**event_test — the new ground truth**:
+
+| Comparison | CSI@1 | CSI@10 | CSI@30 | MAE |
+|---|---|---|---|---|
+| ab2 - ab1 | +0.005 ★ | +0.002 | +0.005 ★ | -0.021 ★ |
+| ab3 - ab1 | **-0.023 ★** | **-0.010 ★** | -0.002 | **+0.085 ★** |
+| ab3 - ab2 | **-0.028 ★** | **-0.012 ★** | **-0.007 ★** | **+0.106 ★** |
+| **ab3b - ab3** | **+0.016 ★** | **+0.017 ★** | **+0.013 ★** | **-0.034 ★** |
+| ab3-cdu - ab3 | +0.005 ★ | -0.002 | +0.001 | -0.029 |
+
+★ = paired 95% CI strictly excludes zero.
+
+**The dBZ-era thesis is dead**:
+
+1. **ERA5 fusion (ab3) systematically HURTS performance on event_test**.
+   The CSI@1 / CSI@10 / MAE deltas vs ab1 are all significant in the
+   negative direction. This is the exact opposite of the dBZ-era
+   claim that "ab1→ab2→ab3 monotonically improves".
+2. **The water-budget PDE loss (ab3b) is now a UNIFORM IMPROVEMENT** over
+   ab3, including extreme CSI@30 (+0.013 ★). There is no "collapse";
+   there is no trade-off. The §3.2 negative-result narrative of the
+   prior paper draft is invalidated.
+3. **The pooled-CSI / smoothing-vs-displacement motivation evaporates**
+   because there is no collapse to diagnose. Pooled-CSI is still
+   methodologically useful as a verification tool but it no longer
+   anchors the paper.
+4. **CDU is a small positive over ab3** on event_test (CSI@1 +0.005 ★),
+   but ab3 itself is the weakest baseline now, so the "architectural
+   sidestep of the trade-off" framing also collapses.
+
+**test_robust**: most deltas are non-significant; ab2 mildly beats ab1
+on CSI@1 (+0.022 ★) and MAE (-0.052 ★). ab3-cdu has a small but
+significant CSI@30 advantage over ab3 (+0.008 ★).
+
+### Honest open questions
+
+The reversal is so total that we cannot rule out training-side artefacts.
+Plausible alternative explanations awaiting user decision before any
+paper rewrite:
+
+  (a) **Under-convergence at 60 ep under mm/h**: the cosine LR was tuned
+      on dBZ-scale loss. mm/h target distribution has ~6× smaller scale
+      and a 150× sparser extreme tail (0.04% pixels >30 vs 6.4% pixels
+      >30 dBZ). The model may need more epochs or a different schedule.
+  (b) **best-ckpt selection by val/csi_10mm**: mm/h csi_10mm is in the
+      0.08-0.12 range (very noisy), so the best-ckpt picker may be
+      latching onto a noisy epoch rather than a real optimum.
+  (c) **ERA5 fusion gate learned weights**: GatedAsymmFusion was tuned
+      with dBZ-scale radar; under mm/h the gate may not have learned
+      sensible mixing weights in 60 ep.
+  (d) **Real effect**: the paper thesis was wrong and the prior
+      "monotonic fusion" / "extreme collapse" findings were artefacts
+      of the dBZ-vs-mm/h inconsistency. This is the most uncomfortable
+      possibility but also the most honest.
+
+### Cron decision (no auto-action on paper)
+
+The cron autopilot has produced the data and the analysis but **will
+not rewrite the paper**. This is a Phase-3-level narrative shift; the
+user must decide:
+  - Option 1: accept and reframe (write a different paper).
+  - Option 2: extend training (more epochs / longer schedule / different
+    best-ckpt rule) to test under-convergence hypothesis.
+  - Option 3: investigate the ERA5 fusion gate behaviour under mm/h
+    (look at learned gate weights vs dBZ-era).
+
