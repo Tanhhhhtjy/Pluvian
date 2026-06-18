@@ -564,3 +564,77 @@ before any retraining or paper rewrite.
 test_robust pysteps will land in ~30-40 min; will append the same
 table for that split.
 
+
+## 2026-06-18 Phase B0 — pysteps test_robust complete; one DL model survives
+
+pysteps test_robust (192 windows, ~57 min wall-clock with 8-worker
+multiprocessing) lands.
+
+### test_robust comparison
+
+| Metric | pysteps | best DL | DL vs pysteps |
+|---|---:|---:|---|
+| CSI@1   | 0.329 | 0.281 (ab2)      | DL **−17%** |
+| CSI@5   | 0.183 | 0.160 (ab2)      | DL **−15%** |
+| CSI@10  | 0.128 | 0.118 (ab3-cdu)  | DL **−8.5%** |
+| **CSI@30** | 0.081 | **0.094 (ab3-cdu)** | **DL +16%** ★ |
+| MAE     | 0.281 | 0.503 (ab2)      | DL +79% worse |
+| FSS@3   | 0.577 | 0.465 (ab2)      | DL **−24%** |
+| FSS@11  | 0.678 | 0.497 (ab2)      | DL **−36%** |
+
+### Combined finding across both splits
+
+pysteps strictly dominates 6/7 metric columns on event_test and
+6/7 on test_robust. The one win for our side is **ab3-cdu on CSI@30
+in test_robust** (0.094 vs pysteps 0.081, +16%).
+
+The split-by-split pattern is striking:
+  - event_test (storm days): pysteps wins **everywhere** including
+    CSI@30. The very target we built CDU for (extreme tail) is where
+    pysteps wins by the widest margin.
+  - test_robust (ordinary days): pysteps still wins on bulk metrics
+    and FSS, but ab3-cdu edges out CSI@30. This may be either
+    (a) the regime where the DL model has actually learned something
+    relative to motion extrapolation, or (b) noise (192 windows ×
+    a rare 0.04% pixel class).
+
+### What pysteps "winning" means for the paper
+
+pysteps STEPS is a 2006-vintage motion-extrapolation + stochastic
+cascade method. It does **not** learn from training data; it just
+extrapolates the most recent observation forward with autoregressive
+noise. That it beats five deep models in mm/h is, methodologically,
+a verdict that the deep models did not learn anything beyond what
+the most recent radar frame already tells you — at least under the
+mm/h training regime we used.
+
+Three responses are possible:
+
+1. **The deep models really are this weak** under mm/h. The paper
+   thesis is dead — we cannot publish "multimodal DL improves over
+   classical methods" because it does not, in our hands. The pivot
+   would be a methodology / negative-results / diagnostic paper
+   (pooled-CSI as a tool, unit-consistency as a lesson).
+2. **The deep models are under-trained at 60 epochs.** Retrain with
+   2-3× the epoch budget + revisit LR schedule + pick best-ckpt by a
+   non-noisy validation metric (e.g. val MAE, not val csi_10mm).
+   Costs 3× the GPU we have already spent.
+3. **The output range / activation / band_centers needs sanity
+   checking.** A 10-minute test would be: load best.pt, run forward
+   on a few windows, check predicted-max vs target-max, predicted
+   distribution vs target distribution. If predictions are still
+   on a dBZ scale (0-70) while targets are mm/h (0-100 but mostly
+   <2), CSI@30mm would be exactly the pattern we see — model never
+   predicts the high mm/h band.
+
+Recommendation: do (3) first (cheap diagnostic), then decide between
+(1) and (2).
+
+### Cron does not change anything
+
+Same as the prior entry: cron will not retrain or rewrite the paper.
+This is a Phase-3-level finding, user must decide direction.
+
+Files added:
+  ckpt/eval/baseline_pysteps_steps/test_robust/metric.json
+
