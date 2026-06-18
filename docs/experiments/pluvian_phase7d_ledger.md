@@ -509,3 +509,58 @@ user must decide:
   - Option 3: investigate the ERA5 fusion gate behaviour under mm/h
     (look at learned gate weights vs dBZ-era).
 
+
+## 2026-06-18 Phase B0 — pysteps STEPS BEATS all 5 DL models on event_test
+
+pysteps STEPS (Pulkkinen 2019) ran end-to-end on the full event_test
+split (96 windows, mm/h). The result is the most uncomfortable finding
+of the project so far.
+
+| Metric (event_test) | pysteps | best of our 5 DL | DL vs pysteps |
+|---|---:|---:|---|
+| CSI@1  | 0.514 | 0.392 (ab2)    | DL is **−31%** |
+| CSI@5  | 0.257 | 0.205 (ab3-cdu)| DL is **−25%** |
+| CSI@10 | 0.132 | 0.103 (ab3b)   | DL is **−28%** |
+| CSI@30 | 0.066 | 0.049 (ab3b)   | DL is **−34%** |
+| MAE    | 0.456 | 0.736 (ab2)    | DL is **+62% worse** |
+| FSS@3  | 0.745 | 0.590 (ab2)    | DL is **−26%** |
+| FSS@11 | 0.820 | 0.624 (ab2)    | DL is **−31%** |
+
+pysteps wins on every metric, by a wide margin. This is not a narrative
+nuance — it is a "do the deep models even work?" question.
+
+### What this likely means
+
+The most plausible explanations, in order:
+
+1. **mm/h training under-convergence.** Our 60-epoch cosine schedule
+   was tuned for the dBZ scale. mm/h targets have ~6× smaller magnitude
+   and a 150× sparser extreme tail. Loss landscapes, gradient norms,
+   and best-ckpt val curves all behave differently. 60 epochs is
+   probably not enough.
+2. **best-ckpt picker selecting the wrong epoch.** We pick by
+   `val/csi_10mm`. Under mm/h, csi_10mm is in the 0.08-0.12 noise
+   band, so the picker is essentially flipping a coin among the late
+   epochs. Net effect: best.pt may be a noisy late checkpoint, not a
+   true performance peak.
+3. **`band_centers = (0, 0.5, 4.5, 19, 50)` mm/h still appropriate?**
+   The numbers happen to be in mm/h units already (so the dataset fix
+   did not break this), but whether 5 bands at these centres is the
+   right discretisation for the actual mm/h target distribution
+   (which is now sparser at high values) is unverified.
+4. **No forward-pass sanity check post-fix.** We never confirmed that
+   model output range matches mm/h target range (e.g. predicted max
+   ~100 mm/h vs target max ~104). If output is still in dBZ scale,
+   CSI@thr in mm/h units would be exactly what we are seeing — the
+   model "predicts no rain" relative to mm/h thresholds.
+
+### Cron does not change anything
+
+This is paper-level. The previous narrative-reversal finding said
+"the dBZ thesis is dead". This finding says "the models themselves
+underperform a 2019 statistical baseline". User decision needed
+before any retraining or paper rewrite.
+
+test_robust pysteps will land in ~30-40 min; will append the same
+table for that split.
+
