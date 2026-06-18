@@ -74,3 +74,4 @@ configs/debug_*
 
 # Pooled bootstrap row dir is a workspace, not a result
 ckpt/bootstrap_ci/_pooled_rows/
+tb/*.tfevents.*
