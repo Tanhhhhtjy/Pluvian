@@ -414,3 +414,26 @@ python scripts/plot_bootstrap_delta_ci.py \
 | ab3b    | 🔄 ep58 it1420/1664 | 21.67 | 0.306 / 0.101 | budget loss active (bud=0.0005), almost done |
 | ab3-cdu | 🔄 ep49 it680/1664 | 22.06 | 0.298 / 0.098 | from-scratch this time, slowest |
 
+
+## 2026-06-18 Phase 7e — 5 retrain runs all complete; eval pipeline launched
+
+All five mm/h-era retrains finished:
+  - ab1     done 60 ep (2026-06-17 17:02 UTC)
+  - ab3     done 60 ep (2026-06-17 17:18 UTC)
+  - ab3b    done 60 ep (2026-06-17 17:52 UTC)
+  - ab3-cdu done 60 ep (2026-06-17 21:37 UTC, from-scratch this time, addresses reviewer C6)
+  - ab2     done 60 ep (2026-06-18 12:28 UTC, re-run with `ablation_2_p7d.yaml` after the xcoreA config bug)
+
+**Sanity eval (ab1 / event_test, mm/h)**:
+  MAE=0.757, CSI@1=0.386, CSI@5=0.203, CSI@10=0.096, CSI@30=0.039, FSS@3=0.583, FSS@11=0.615
+
+vs old dBZ-era ab1 (MAE 5.19, CSI@1 0.397, CSI@10 0.565, CSI@30 0.308):
+  - MAE collapses 6.9× because mm/h scale is ~6× smaller than dBZ
+  - CSI@1 nearly identical (0.386 vs 0.397) — light-rain detection is unit-invariant
+  - CSI@10 drops 6× because mm/h-10 is now a real moderate threshold (0.8% pixels) instead of dBZ-10 (24% pixels)
+  - CSI@30 drops 8× because mm/h-30 is now a real extreme threshold (0.04% pixels) instead of dBZ-30 (6.4% pixels)
+
+**The unit fix worked as expected** — CSI@30 now genuinely measures extreme-precipitation skill. The qualitative shape of the ab1→ab3 cascade and the ab3b vs ab3 trade-off should not invert under the unit change but the magnitudes will look very different in the new tables.
+
+**Post-training eval pipeline launched (2026-06-18 19:32 UTC, PID 3356216):** running 10 holdout evals (5 ckpts × 2 splits) sequentially on GPU0. ETA ~45 min. After that we still need bootstrap CIs (~5 h serial), pooled-CSI, per-lead, paired delta CIs, and figure regeneration. None of these touch the trained models — they are read-only inference.
+
