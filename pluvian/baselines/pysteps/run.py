@@ -13,7 +13,7 @@ Usage:
     python -m pluvian.baselines.pysteps.run \\
         --split event_test \\
         --out_dir ckpt/eval/baseline_pysteps_steps \\
-        [--n_ens 12] [--kmperpixel 1.0] [--timestep 6]
+        [--n_ens 12] [--kmperpixel 1.0] [--timestep 6] [--n_workers 8]
 
 Output:
     <out_dir>/<split>/metric.json
@@ -25,6 +25,7 @@ import json
 import os
 import sys
 import time
+from multiprocessing import Pool
 from pathlib import Path
 
 import numpy as np
@@ -127,6 +128,8 @@ def main() -> None:
     ap.add_argument("--n_forecast", type=int, default=18)
     ap.add_argument("--limit", type=int, default=0,
                     help="only run this many windows (0 = all). For dev.")
+    ap.add_argument("--n_workers", type=int, default=1,
+                    help="parallel pysteps workers (multiprocessing). default 1.")
     args = ap.parse_args()
 
     splits = args.split
@@ -138,67 +141,75 @@ def main() -> None:
         starts = _starts_for_split(args.manifest, [split])
         if args.limit:
             starts = starts[: args.limit]
-        print(f"  windows: {len(starts)}")
-        ds = NPJDataset(
-            starts=starts,
-            window_minutes=(args.n_input + args.n_forecast) * args.timestep_min,
-            load_era5=False,
-        )
+        print(f"  windows: {len(starts)}  n_workers: {args.n_workers}")
 
         # Accumulators.
         csi_totals = {int(t): {"hits": 0, "fa": 0, "miss": 0} for t in THRESHOLDS}
-        # FSS using full-set numerator/denominator accumulator (mirror train.py).
         fss_totals = {nbr: {"num": 0.0, "den": 0.0} for nbr in FSS_NBRS}
         mae_acc = 0.0
         mse_acc = 0.0
         n_pix = 0
         n_done = 0
+        n_err = 0
         t0 = time.time()
 
-        for idx in range(len(ds)):
-            sample = ds[idx]
-            radar = sample["radar"]  # (T, H, W) torch.float32 mm/h
-            radar = radar.numpy() if hasattr(radar, "numpy") else np.asarray(radar)
-            history = radar[: args.n_input]                       # (12, H, W)
-            target = radar[args.n_input : args.n_input + args.n_forecast]  # (18, H, W)
+        worker_args = [
+            {
+                "idx": idx,
+                "starts_tuple": tuple(starts),
+                "n_input": args.n_input,
+                "n_forecast": args.n_forecast,
+                "n_ens": args.n_ens,
+                "kmperpixel": args.kmperpixel,
+                "timestep_min": args.timestep_min,
+                "thresholds": tuple(THRESHOLDS),
+                "fss_nbrs": tuple(FSS_NBRS),
+            }
+            for idx in range(len(starts))
+        ]
 
-            try:
-                pred = _pysteps_forecast_one(
-                    history,
-                    n_forecast=args.n_forecast,
-                    n_ens=args.n_ens,
-                    kmperpixel=args.kmperpixel,
-                    timestep_min=args.timestep_min,
-                )
-            except Exception as e:
-                print(f"  [skip] window {idx} pysteps failed: {e!r}")
-                continue
+        # Pool size: cap at n_workers but no larger than len(starts).
+        nw = max(1, min(args.n_workers, len(starts)))
+        if nw == 1:
+            # Avoid multiprocessing entirely when single worker.
+            from pluvian.baselines.pysteps.worker import worker as _w
+            results_iter = (_w(wa) for wa in worker_args)
+        else:
+            from pluvian.baselines.pysteps.worker import worker as _w
+            # Use spawn to avoid fork-related FFT/state issues.
+            import multiprocessing as mp
+            ctx = mp.get_context("spawn")
+            pool = ctx.Pool(nw)
+            results_iter = pool.imap_unordered(_w, worker_args, chunksize=1)
 
-            pred_t = torch.from_numpy(pred).float().unsqueeze(0)       # (1, T, H, W)
-            tgt_t = torch.from_numpy(target).float().unsqueeze(0)      # (1, T, H, W)
-
-            mae_acc += float((pred_t - tgt_t).abs().sum().item())
-            mse_acc += float(((pred_t - tgt_t) ** 2).sum().item())
-            n_pix += int(pred_t.numel())
-
-            for thr in THRESHOLDS:
-                h, fa, m = _csi_counts(pred_t, tgt_t, float(thr))
-                ct = csi_totals[int(thr)]
-                ct["hits"] += h
-                ct["fa"] += fa
-                ct["miss"] += m
-
-            # FSS at csi_1mm threshold (mirrors paper figure default).
-            for nbr in FSS_NBRS:
-                num, den = _fss_components(pred_t, tgt_t, 1.0, nbr)
-                fss_totals[nbr]["num"] += float(num)
-                fss_totals[nbr]["den"] += float(den)
-
-            n_done += 1
-            if n_done % 10 == 0:
-                el = time.time() - t0
-                print(f"  [{n_done}/{len(ds)}] elapsed={el:.1f}s  "
-                      f"sec/window={el / n_done:.2f}")
+        try:
+            for res in results_iter:
+                if res.get("status") != "ok":
+                    n_err += 1
+                    if n_err <= 5:
+                        print(f"  [skip] idx={res.get('idx')} err={res.get('err')}")
+                    continue
+                mae_acc += res["mae_sum"]
+                mse_acc += res["mse_sum"]
+                n_pix += res["n_pix"]
+                for thr, (h, fa, m) in res["csi"].items():
+                    ct = csi_totals[int(thr)]
+                    ct["hits"] += h
+                    ct["fa"] += fa
+                    ct["miss"] += m
+                for nbr, (num, den) in res["fss"].items():
+                    fss_totals[int(nbr)]["num"] += num
+                    fss_totals[int(nbr)]["den"] += den
+                n_done += 1
+                if n_done % 10 == 0 or n_done == len(starts):
+                    el = time.time() - t0
+                    eta = el / n_done * (len(starts) - n_done)
+                    print(f"  [{n_done}/{len(starts)}] elapsed={el:.1f}s  "
+                          f"sec/window={el / n_done:.2f}  ETA={eta:.0f}s  err={n_err}")
+        finally:
+            if nw > 1:
+                pool.close()
+                pool.join()
 
         # Aggregate.
         mae = mae_acc / n_pix
