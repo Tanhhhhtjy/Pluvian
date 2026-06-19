@@ -14,10 +14,10 @@
 | 模态 | 来源 | 原始时间分辨率 | 原始空间形态 |
 |---|---|---|---|
 | 雷达 | `radar_nc/`，已过 dbz_to_rainrate | 6 min | dense grid 661×701, mm/h |
-| PWV | `pwv/` GNSS 站点 | 30 min | sparse stations, kg/m² |
-| 温度 TEM | `stations/station_*.csv` 第 12 列 + ERA5 t 925hPa | 1 hour / hour | sparse 289 stations + 0.25° ERA5 |
-| 湿度 RHU | `stations/station_*.csv` 第 13 列（相对湿度 %） + ERA5 q 925hPa | 1 hour / hour | 同上 |
-| 气压 PRS | `stations/station_*.csv` 第 9 列（hPa） + ERA5 surface_pressure (若有) | 1 hour / hour | 同上 |
+| PWV | `pwv/` GNSS 站点（_combine_homogenization.txt 格式） | 30 min | sparse stations, kg/m² |
+| 温度 TEM | `stations/station_*.csv` 第 12 列 + ERA5 t（多层） | 1 hour / hour | sparse 389 stations + 0.25° ERA5 |
+| 湿度 RHU | `stations/station_*.csv` 第 13 列（相对湿度 %） + ERA5 q（多层） | 1 hour / hour | 同上 |
+| 气压 PRS | `stations/station_*.csv` 第 9 列（hPa） — **注：ERA5 数据集无 surface_pressure 文件，气压只能用地面站** | 1 hour | sparse 389 stations |
 
 注：地面站 ERA5 都要——地面站有真实点观测（physical truth），ERA5 提供 reanalysis full-grid 但是 0.25° coarse。两者互补。
 
@@ -119,18 +119,22 @@ np.savez_compressed(
 - 数值范围预期
 - 是否需要 per-batch standardize
 
-## 6. 数据量估算
+## 6. 数据量估算 (修订: 基于 Team B 单帧实测)
 
 | 项 | 数量 | 大小估算 |
 |---|---|---|
 | 时刻数 (94 days × 144 frames) | ~13500 | — |
-| PNG / 模态 / 帧 (8 模态 × 13500) | 108,000 | ~400 KB × 108k = **43 GB** |
-| NPZ / 帧 (5 dense + 3 ERA5 + sparse, 压缩) | 13500 | ~3 MB × 13500 = **40 GB** |
-| Stations overlay (sample only, 100 case) | 100 | ~1 MB × 100 = 100 MB |
+| 单帧总输出 (7 PNG + 1 NPZ, 压缩后, Team B 实测) | — | ~8.6 MB / 帧 |
+| **总计 (13500 帧 × 8.6 MB)** | | **~116 GB** |
+| Stations overlay (sample only, 100 case) | 100 | ~100 MB |
 | Case PDF (汇报用 ~10) | 10 | ~50 MB |
-| **总计** | | **~85 GB** |
 
-⚠️ 这是远程上传规模。需要规划上传方式。
+⚠️ 实测值比早期估算 (85 GB) 大约高 36%。需要规划上传方式。
+
+**MVP 子集 (event_test 4 storm 天 × 144 frame = 576 帧)**:
+- 大小 ~5 GB
+- 跑时 ~10 min (8 worker)
+- 用途: 同学开工 + 汇报展示, 全集后台慢慢传
 
 ## 7. 工程拆解
 
@@ -163,12 +167,15 @@ np.savez_compressed(
 | station CSV 时间对齐 (1h cadence → 6 min) | 用 pipeline/station_io.py 现有 linear interp |
 | 同学 npz load 时 schema 变化 | 在 README 锁定 schema 版本号，dump 完不再改 |
 
-## 10. 验收标准
+## 10. 验收标准 (修订)
 
-- ✅ 90% 时刻有 5 模态非空数据
-- ✅ PNG 肉眼可读，强对流核明显
-- ✅ NPZ float32 物理值，单位文档清楚
-- ✅ Stations overlay PNG 至少 10 个 case 可供汇报
-- ✅ README 含"5 分钟上手"示例 load 代码
-- ✅ Normalize stats JSON 含每模态 p2/p50/p98/min/max
-- ✅ 上传链接发送给小组同学
+| 项 | 标准 | 状态 |
+|---|---|---|
+| 7 模态 dense PNG + NPZ 单帧 dump 通过 | Team A smoke OK | ✅ |
+| 7 模态 normalize_stats.json (p2/p50/p98/min/max + log1p flag) | dataset-wide scan | (本任务) |
+| PNG 用真实 stats 视觉合理 (不全黑/全白) | 肉眼对比 | (本任务) |
+| event_test MVP (576 帧 ~5 GB) 跑通 (n_ok ≥ 95%) | run_log.json | (本任务) |
+| 全集 13500 帧 ~116 GB dump (n_ok ≥ 90%) | run_log.json | 等 user GO |
+| Stations overlay PNG 至少 10 case (汇报用) | sample 集 | 周日前 |
+| README "5 分钟上手" + schema 锁定 | docs/team_dataset/README.md | ✅ |
+| 上传链接发给同学 | user 拍板上传路径 | **等 user blocker** |
