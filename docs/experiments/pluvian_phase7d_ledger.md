@@ -638,3 +638,86 @@ This is a Phase-3-level finding, user must decide direction.
 Files added:
   ckpt/eval/baseline_pysteps_steps/test_robust/metric.json
 
+
+## 2026-06-18 ROOT CAUSE FOUND — `band_centers` caps model output at 50 mm/h
+
+Forward-pass sanity check on all 5 mm/h-era best.pt revealed the
+single bug responsible for both the narrative reversal and the
+pysteps domination.
+
+### Evidence
+
+Across all 5 ckpts × 3 event_test windows:
+
+  ground truth target max: 130 / 182 / 221 mm/h
+  model predicted max:     34-50 mm/h, NEVER exceeds 50
+
+The model can predict the bulk distribution faithfully (pred p99 ratio
+0.6-1.1 vs target p99), but the **maximum** is hard-capped at 50.
+
+### Root cause
+
+`model/decoder.py:146` and `configs/_base.yaml`:
+
+  band_centers = (0.0, 0.5, 4.5, 19.0, 50.0)
+
+The intensity-stratified rain head outputs:
+
+  rain_pred = sum(softmax(logits) * band_centers)
+
+This is a convex combination of the band centers. The **mathematical
+upper bound** of this prediction is the largest band center: 50.0.
+So no matter how confident the model is, it physically cannot emit
+a rain rate above 50 mm/h.
+
+Targets in event_test reach 221 mm/h. Every pixel where target > 50
+contributes a guaranteed miss to CSI@30 / CSI@50. The model's
+%>30mm output is 0.0002–0.05 % across windows, vs target 0.02–0.12 %,
+i.e. the model emits the extreme band 3–500× less often than the
+ground truth.
+
+### Why this explains everything
+
+1. **mm/h CSI@30 collapse (vs pysteps)**: pysteps extrapolates raw
+   pixel values, no head cap. We cap at 50. CSI@30 will always look
+   bad in mm/h.
+2. **dBZ-era looked fine**: under dBZ targets (max ~70 dBZ ≈ 70 in
+   the same numeric range), the cap at 50 was mildly constraining
+   but not pathological. Switching to mm/h units made the cap
+   pathological because the mm/h tail is wider.
+3. **Narrative reversal**: ab3b's old "CSI@30 collapse" was real in
+   dBZ; under mm/h all five models share the same 50-cap behaviour,
+   so ablation differences shrink and shift in unpredictable ways.
+
+### Fix path
+
+`band_centers` must be widened. Reasonable mm/h-aware values:
+
+  (0.0, 0.5, 4.5, 19.0, 50.0, 150.0)        — 6 bands, keep current 4 + add top
+  (0.0, 1.0, 5.0, 20.0, 60.0, 150.0)        — 6 bands, rescale
+  (0.0, 0.5, 2.0, 8.0, 30.0, 80.0, 200.0)   — 7 bands, finer
+
+Changing `band_centers` changes the rain head's output channel count
+(K = len(band_centers)). **All 5 ckpts must be retrained**. The
+band_sample_weights config also needs re-tuning (currently
+[0.1, 1.0, 2.0, 4.0, 8.0] for 5 bands).
+
+This is a Phase 7f-level intervention. Cron does not auto-fix
+because:
+  (a) the right number of bands and their values is a design call
+  (b) re-training all 5 models is another ~24 h GPU budget
+  (c) the band_sample_weights must be re-tuned in proportion
+  (d) the dBZ-era paper figures used 5 bands; switching to 6 or 7
+      changes the discretisation comparison reviewers will read
+
+### Status
+
+Phase 7e is **diagnostically complete**: the unit fix worked
+correctly at the dataset level, but the model's expressivity ceiling
+was set by an unrelated default tuned for dBZ. The Phase 7e ckpts
+are valid evidence of "model in mm/h with 50-cap" — but that is not
+a fair model for the paper's claims.
+
+Sanity script committed at `scripts/forward_sanity_check.py` so
+future Phase 7f / 7g runs can rerun it.
+
