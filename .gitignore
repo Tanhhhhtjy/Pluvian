@@ -75,3 +75,5 @@ configs/debug_*
 # Pooled bootstrap row dir is a workspace, not a result
 ckpt/bootstrap_ci/_pooled_rows/
 tb/*.tfevents.*
+third_party/earthformer_src/
+ckpt/baselines/earthformer/sevir_pretrained/*.pt
